@@ -92,8 +92,14 @@ if [ ! -x "$APP_DIR/.venv/bin/python" ]; then
     python3 -m venv "$APP_DIR/.venv"
     echo "     venv created"
 fi
-"$APP_DIR/.venv/bin/pip" install --quiet --upgrade pip
-"$APP_DIR/.venv/bin/pip" install --quiet -r "$APP_DIR/service/requirements.txt"
+# Do NOT pass --quiet: the dependency set (PyMuPDF, Pillow, lxml, uvicorn
+# extras) is a 40-60 MB download and with --quiet the terminal shows nothing,
+# making a perfectly healthy install look frozen.  Pip's own progress lines are
+# the signal that step 3 is alive.
+echo "     upgrading pip ..."
+"$APP_DIR/.venv/bin/pip" install --upgrade pip
+echo "     installing $(grep -cve '^\s*#' -e '^\s*$' "$APP_DIR/service/requirements.txt") packages (this can take a few minutes) ..."
+"$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/service/requirements.txt"
 echo "     dependencies installed"
 
 chown -R root:root "$APP_DIR"

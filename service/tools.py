@@ -98,8 +98,11 @@ TOOLS = {
 }
 
 # Order matters: it is the nav order and the order of the grid.
-ORDER = ["merge", "compress", "pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
-         "word-to-pdf", "excel-to-pdf", "ppt-to-pdf"]
+# Conversions first (PDF->other, then other->PDF), then the two utility tools
+# (merge / compress) last -- they sit right after PPT转PDF in the nav.
+ORDER = ["pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
+         "word-to-pdf", "excel-to-pdf", "ppt-to-pdf",
+         "merge", "compress"]
 
 # Conversions that go through the generic /convert page (everything else has a
 # bespoke page because the interaction is genuinely different).
