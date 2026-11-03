@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>压缩文件 — 在线免费压缩</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  .file{display:none;gap:16px;align-items:flex-start;margin-top:18px;padding:14px;
+        background:var(--card);border:1px solid var(--line);border-radius:12px}
+  .file.on{display:flex}
+  .file .thumb{width:104px;height:128px;flex:0 0 auto;display:flex;align-items:center;
+        justify-content:center;background:#fafbfc;border-radius:8px;overflow:hidden}
+  .file .thumb img{max-width:100%;max-height:100%;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+  .file .thumb .ph{color:#c0c6cf;font-size:12px}
+  .file .info{flex:1;min-width:0;padding-top:2px}
+  .file .nm{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file .meta{color:var(--muted);font-size:13px;margin-top:5px}
+  .file .rm{position:static;background:none;border:1px solid var(--line);color:var(--muted);
+        border-radius:7px;padding:4px 12px;font-size:13px;cursor:pointer;font-family:inherit}
+  .file .rm:hover{border-color:var(--danger);color:var(--danger)}
+
+  .levels{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:22px}
+  .level{text-align:left;background:var(--card);border:1px solid var(--line);border-radius:12px;
+        padding:14px 16px;cursor:pointer;font-family:inherit;transition:.12s}
+  .level:hover{border-color:#b9c2cc}
+  .level.on{border-color:var(--brand);background:#eef5fc;box-shadow:0 0 0 1px var(--brand) inset}
+  .level .t{display:block;font-size:14px;font-weight:500;color:var(--text);margin-bottom:4px}
+  .level .d{display:block;font-size:12px;color:var(--muted);line-height:1.5}
+  .levels.off{opacity:.5;pointer-events:none}
+
+  .cmp{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin:4px 0 14px}
+  .cmp .big{font-size:22px;font-weight:500;color:var(--text)}
+  .cmp .old{color:var(--muted);text-decoration:line-through;font-size:15px}
+  .cmp .arrow{color:var(--muted)}
+  .cmp .save{background:#d8f0e2;color:var(--ok);border-radius:99px;padding:3px 10px;
+             font-size:12px;font-weight:500}
+  .ratio{height:8px;background:#dbe7e1;border-radius:99px;overflow:hidden;margin-bottom:16px}
+  .ratio i{display:block;height:100%;background:var(--ok);border-radius:99px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav" id="nav"></nav>
+  <h1>压缩文件</h1>
+  <p class="sub">PDF、JPG、PNG 都能压：图片重采样、PDF 重排对象，画面与文字保持清晰。</p>
+
+  <div class="drop" id="drop">
+    <div><b>选择 PDF 或图片</b> 或把文件拖到这里</div>
+    <small id="limits">单个文件最大 100 MB</small>
+    <input type="file" id="picker" accept="application/pdf,image/jpeg,image/png" hidden>
+  </div>
+
+  <div class="file" id="file">
+    <div class="thumb" id="thumb"><span class="ph">加载中…</span></div>
+    <div class="info">
+      <div class="nm" id="fname"></div>
+      <div class="meta" id="fmeta"></div>
+    </div>
+    <button class="rm" id="remove">移除</button>
+  </div>
+
+  <div class="levels off" id="levels">
+    <button class="level" data-level="extreme">
+      <span class="t">极限压缩</span>
+      <span class="d">质量较低，体积最小</span>
+    </button>
+    <button class="level on" data-level="recommended">
+      <span class="t">推荐压缩</span>
+      <span class="d">质量与体积平衡</span>
+    </button>
+    <button class="level" data-level="less">
+      <span class="t">轻度压缩</span>
+      <span class="d">质量优先，体积略减</span>
+    </button>
+  </div>
+
+  <div class="bar">
+    <button class="primary" id="go" disabled>开始压缩</button>
+    <span class="hint" id="hint"></span>
+  </div>
+
+  <div class="prog" id="prog"><i id="progbar"></i></div>
+  <div class="msg" id="msg"></div>
+
+  <div class="result" id="result">
+    <div class="ttl">压缩完成<span id="rsum"></span></div>
+    <div class="cmp">
+      <span class="old" id="rold"></span>
+      <span class="arrow">→</span>
+      <span class="big" id="rnew"></span>
+      <span class="save" id="rsave"></span>
+    </div>
+    <div class="ratio"><i id="rbar"></i></div>
+    <div class="row">
+      <a class="dl" id="rdl" href="#">下载文件</a>
+      <button class="ghost" id="again">再压一个</button>
+    </div>
+    <div class="cd">文件将在 <b id="cd">--:--</b> 后自动删除，请及时下载。</div>
+  </div>
+
+  <div class="foot">
+    文件仅用于本次压缩，到期自动删除。<br>
+    本站无需登录；为防滥用，按设备与网络地址做频率限制。
+  </div>
+</div>
+
+<script src="/static/nav.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+let CFG = { max_file_mb: 100, ttl: 3600,
+            plan: { jobs_left: null, jobs_per_day: 0 } };
+let item = null, level = "recommended", busy = false, tick = null;
+
+const $ = s => document.querySelector(s);
+const drop = $("#drop"), picker = $("#picker"), go = $("#go"), msg = $("#msg"),
+      hint = $("#hint"), prog = $("#prog"), progbar = $("#progbar"),
+      result = $("#result"), fileBox = $("#file"), levels = $("#levels");
+
+async function fingerprint() {
+  const c = document.createElement("canvas");
+  c.width = 220; c.height = 40;
+  const x = c.getContext("2d");
+  x.textBaseline = "top"; x.font = "15px Arial";
+  x.fillStyle = "#f60"; x.fillRect(0, 0, 110, 22);
+  x.fillStyle = "#069"; x.fillText("pdfmerge-fp-\u{1F5C4}", 2, 4);
+  const raw = [c.toDataURL(), navigator.userAgent,
+    screen.width + "x" + screen.height + "x" + (screen.colorDepth || 0),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    (navigator.languages || []).join(","),
+    navigator.hardwareConcurrency || 0].join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].slice(0, 16)
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+let DEVICE = "";
+
+/* Config must carry the device id: the quota is keyed by it, and without the
+   header the server answers from a user-agent bucket -- i.e. someone else's
+   remaining allowance. */
+(async () => {
+  DEVICE = await fingerprint();
+  try {
+    const r = await fetch("/api/v1/config",
+                          { headers: { "X-Device-Id": DEVICE } });
+    if (!r.ok) return;
+    const c = await r.json();
+    CFG = c;
+    $("#limits").textContent =
+      `单个文件最大 ${c.max_file_mb} MB（支持 PDF / JPG / PNG）`;
+    sync();
+  } catch (e) {}
+})();
+
+/* ---------- intake: one file, replacing whatever was there ---------- */
+drop.addEventListener("click", () => { if (!busy) picker.click(); });
+drop.addEventListener("dragover", e => { if (!busy) { e.preventDefault(); drop.classList.add("hot"); } });
+drop.addEventListener("dragleave", () => drop.classList.remove("hot"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("hot");
+  if (!busy) add([...e.dataTransfer.files][0]);
+});
+picker.addEventListener("change", e => { add([...e.target.files][0]); picker.value = ""; });
+
+function isImage(f) {
+  return f.type === "image/jpeg" || f.type === "image/png"
+      || /\.(jpe?g|png)$/i.test(f.name);
+}
+
+function add(f) {
+  clearMsg(); hideResult();
+  if (!f) return;
+  if (!(f.type === "application/pdf" || /\.pdf$/i.test(f.name) || isImage(f))) {
+    showMsg("err", "只能压缩 PDF、JPG 或 PNG 文件"); return;
+  }
+  if (f.size > CFG.max_file_mb * 1048576) {
+    showMsg("err", `文件超过 ${CFG.max_file_mb} MB`); return;
+  }
+  item = { file: f, pages: 0, isImage: isImage(f), thumbUrl: null };
+  fileBox.classList.add("on");
+  $("#fname").textContent = f.name;
+  $("#fmeta").textContent = mb(f.size);
+  $("#thumb").innerHTML = '<span class="ph">加载中…</span>';
+  thumb();
+  sync();
+}
+
+async function thumb() {
+  if (!item) return;
+  if (item.isImage) {
+    try {
+      const url = URL.createObjectURL(item.file);
+      const slot = $("#thumb");
+      slot.innerHTML = "";
+      const img = new Image();
+      img.onload = () => URL.revokeObjectURL(url);
+      img.src = url;
+      slot.appendChild(img);
+      $("#fmeta").textContent = mb(item.file.size);
+      sync();
+    } catch (e) {
+      $("#thumb").innerHTML = '<span class="ph">无法预览</span>';
+    }
+    return;
+  }
+  try {
+    const data = await item.file.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data }).promise;
+    item.pages = doc.numPages;
+    if (CFG.max_pages && item.pages > CFG.max_pages) {
+      // refuse here rather than after a 15 MB upload: the page count is known
+      // the moment the file is parsed, and a wasted upload on a metered
+      // connection is the worst possible way to learn the rule
+      showMsg("err", `这个文件 ${item.pages} 页，免费版最多 ${CFG.max_pages} 页`);
+      item = null;
+      fileBox.classList.remove("on");
+      sync();
+      return;
+    }
+    const page = await doc.getPage(1);
+    const vp0 = page.getViewport({ scale: 1 });
+    const scale = Math.min(150 / vp0.width, 140 / vp0.height);
+    const vp = page.getViewport({ scale });
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+    await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+    const slot = $("#thumb");
+    if (!slot) return;
+    slot.innerHTML = "";
+    const img = new Image();
+    img.src = c.toDataURL("image/jpeg", 0.8);
+    slot.appendChild(img);
+    $("#fmeta").textContent = `${item.pages} 页 · ${mb(item.file.size)}`;
+    sync();
+  } catch (e) {
+    $("#thumb").innerHTML = '<span class="ph">无法预览</span>';
+    $("#fmeta").textContent = mb(item.file.size);
+  }
+}
+
+$("#remove").onclick = () => {
+  if (busy) return;
+  item = null;
+  fileBox.classList.remove("on");
+  hideResult(); clearMsg(); showProgress(0);
+  sync();
+};
+
+document.querySelectorAll(".level").forEach(b => {
+  b.onclick = () => {
+    if (busy) return;
+    level = b.dataset.level;
+    document.querySelectorAll(".level").forEach(x =>
+      x.classList.toggle("on", x === b));
+  };
+});
+
+function sync() {
+  const over = !!(item && CFG.max_pages && item.pages > CFG.max_pages);
+  const p = CFG.plan || {};
+  const left = p.jobs_left;
+  const noQuota = typeof left === "number" && left <= 0;
+
+  go.disabled = busy || !item || over || noQuota;
+  levels.classList.toggle("off", !item);
+  hint.textContent = !item ? ""
+    : (left === null || left === undefined)
+      ? "今天不限次数"
+      : (noQuota ? "今日额度已用完" : `今天还剩 ${left} 次免费额度`);
+
+  if (noQuota && item) {
+    showMsg("err", "今天的免费额度已用完，明天再来，或升级 Pro");
+  }
+}
+
+/* ---------- compress ---------- */
+go.onclick = async () => {
+  if (busy || !item) return;
+  busy = true; setBusy(true); hideResult();
+  try {
+    showMsg("info", "正在上传…");
+    const res = await fetch("/api/v1/uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({ files: [{ name: item.file.name, size: item.file.size }] })
+    });
+    if (!res.ok) throw await apiError(res);
+    const { uploads } = await res.json();
+
+    showProgress(1);
+    await putFile(uploads[0].url, item.file, sent => {
+      const pct = Math.min(99, Math.round(sent / item.file.size * 100));
+      showProgress(pct);
+      showMsg("info", `正在上传… ${pct}%`);
+    });
+    showProgress(100);
+
+    showMsg("info", "正在压缩…");
+    const jr = await fetch("/api/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({
+        task: "compress",
+        files: [{ file_id: uploads[0].file_id }],
+        options: { level: level, name: item.file.name }
+      })
+    });
+    if (!jr.ok) throw await apiError(jr);
+    const job = await jr.json();
+    if (typeof job.jobs_left === "number" || job.jobs_left === null) {
+      CFG.plan = CFG.plan || {};
+      CFG.plan.jobs_left = job.jobs_left;
+    }
+    await poll(job.job_id);
+  } catch (e) {
+    showMsg("err", e.message || "出错了，请重试");
+    showProgress(0);
+  } finally {
+    busy = false; setBusy(false); sync();
+  }
+};
+
+function putFile(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url, true);
+    x.setRequestHeader("Content-Type", item.isImage ? item.file.type : "application/pdf");
+    x.setRequestHeader("X-Device-Id", DEVICE);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) return resolve();
+      let d = {};
+      try { d = (JSON.parse(x.responseText).detail) || {}; } catch (e) {}
+      reject(new Error(d.message || `上传失败 (${x.status})`));
+    };
+    x.onerror = () => reject(new Error("网络中断，请重试"));
+    x.send(blob);
+  });
+}
+
+async function poll(jobId) {
+  for (let i = 0; i < 240; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    const r = await fetch("/api/v1/jobs/" + jobId);
+    if (!r.ok) throw await apiError(r);
+    const j = await r.json();
+    if (j.status === "done") {
+      showProgress(0);
+      clearMsg();
+      showResult(j);
+      return;
+    }
+    if (j.status === "failed") throw new Error((j.error && j.error.message) || "压缩失败");
+    showMsg("info", j.status === "queued" ? "排队中…" : "正在压缩…");
+  }
+  throw new Error("等待超时，请重试");
+}
+
+/* ---------- result ---------- */
+function showResult(j) {
+  const r = j.result || {};
+  const before = r.before || item.file.size;
+  const after = r.after || before;
+  const saved = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+  const media = r.media || "pdf";
+
+  $("#rold").textContent = mb(before);
+  $("#rnew").textContent = mb(after);
+  $("#rsum").textContent = media === "image" ? "" : ` · ${j.pages} 页`;
+
+  if (saved <= 0) {
+    // Never dress this up as a success: the file is already optimised and the
+    // server handed the original back. Saying "省了 0%" invites a support mail.
+    $("#rsave").textContent = "已是最优";
+    $("#rsave").style.background = "#e8ecef";
+    $("#rsave").style.color = "#5b6570";
+    $("#rbar").style.width = "100%";
+    $("#rbar").style.background = "#b9c2cc";
+    showMsg("warn", "这个文件已经很精简了，压缩后没有变小。可以直接下载原文件。");
+  } else {
+    $("#rsave").textContent = `省 ${saved}%`;
+    $("#rsave").style.background = "#d8f0e2";
+    $("#rsave").style.color = "var(--ok)";
+    $("#rbar").style.background = "var(--ok)";
+    $("#rbar").style.width = Math.max(4, Math.round(after / before * 100)) + "%";
+  }
+
+  $("#rdl").textContent = media === "image" ? "下载压缩后的图片" : "下载压缩后的 PDF";
+  $("#rdl").href = j.download;
+  result.classList.add("on");
+  startCountdown(typeof j.expires_in === "number" ? j.expires_in : CFG.ttl);
+  result.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function hideResult() {
+  result.classList.remove("on");
+  if (tick) { clearInterval(tick); tick = null; }
+}
+
+function startCountdown(sec) {
+  if (tick) clearInterval(tick);
+  const el = $("#cd");
+  let left = Math.max(0, sec);
+  const fmt = s => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  el.textContent = fmt(left);
+  tick = setInterval(() => {
+    left -= 1;
+    el.textContent = fmt(Math.max(0, left));
+    if (left <= 0) {
+      clearInterval(tick); tick = null;
+      el.textContent = "已过期";
+      result.classList.remove("on");
+      showMsg("err", "结果已过期删除，请重新压缩。");
+    }
+  }, 1000);
+}
+
+$("#again").onclick = () => {
+  item = null;
+  fileBox.classList.remove("on");
+  hideResult(); clearMsg(); showProgress(0); sync();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
+
+/* ---------- misc ---------- */
+function setBusy(on) {
+  drop.classList.toggle("busy", on);
+  go.textContent = on ? "处理中…" : "开始压缩";
+  document.querySelectorAll(".level").forEach(b => { b.disabled = on; });
+}
+
+function showProgress(pct) {
+  if (!pct) { prog.classList.remove("on"); progbar.style.width = "0%"; return; }
+  prog.classList.add("on");
+  progbar.style.width = pct + "%";
+}
+
+async function apiError(res) {
+  let d = {};
+  try { d = (await res.json()).detail || {}; } catch (e) {}
+  if (res.status === 429) return new Error(d.message || "请求过于频繁，请稍后再试");
+  if (res.status === 503) return new Error(d.message || "服务繁忙，请稍后重试");
+  return new Error(d.message || `请求失败 (${res.status})`);
+}
+function showMsg(kind, text) { msg.className = "msg " + kind; msg.textContent = text; }
+function clearMsg() { msg.className = "msg"; msg.textContent = ""; }
+function mb(n) { return n > 1048576 ? (n / 1048576).toFixed(2) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+</script>
+</body>
+</html>

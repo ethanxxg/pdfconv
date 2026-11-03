@@ -1,0 +1,44 @@
+[Unit]
+Description=pdfkit — PDF merge / compress web service
+Documentation=https://github.com/ethanxxg/pdfconv
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pdfkit
+Group=pdfkit
+WorkingDirectory=/opt/pdfkit
+Environment=PDFM_DATA=/var/lib/pdfkit
+Environment=PDFM_HOST=127.0.0.1
+Environment=PDFM_PORT=8090
+Environment=PDFM_WORKERS=4
+Environment=PDFM_QUEUE=64
+Environment=PDFM_TTL=3600
+Environment=PDFM_MAX_FILE_MB=20
+Environment=PDFM_MAX_PAGES=5
+Environment=PDFM_FREE_JOBS_PER_DAY=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Set PDFM_SECRET once you run more than one node, so signed download links are
+# valid everywhere. Without it each node writes its own secret into PDFM_DATA.
+# Environment=PDFM_SECRET=change-me
+
+# --workers 1 is not a typo: job state and the daily quota are per process.
+# PDFM_HOST/PDFM_PORT are substituted by systemd, so deploy/install.sh can change
+# the bind address without rewriting this line.
+ExecStart=/opt/pdfkit/.venv/bin/python -m uvicorn service.main:app \
+          --host ${PDFM_HOST} --port ${PDFM_PORT} --workers 1
+
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+# hardening: the service only ever needs its data directory
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pdfkit
+
+[Install]
+WantedBy=multi-user.target

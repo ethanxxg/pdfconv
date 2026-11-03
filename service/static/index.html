@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>合并 PDF — 在线免费合并</title>
+<link rel="icon" href="data:,">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .tools{display:none;align-items:center;gap:8px;margin-top:20px;flex-wrap:wrap;font-size:13px;color:var(--muted)}
+  .tools.on{display:flex}
+  .tools .lab{margin-right:2px}
+  .sort{border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:7px;padding:5px 11px;font-size:13px;cursor:pointer;font-family:inherit}
+  .sort:hover{border-color:#b9c2cc}
+  .sort.on{background:var(--brand);border-color:var(--brand);color:#fff}
+  .tools .spacer{margin-left:auto}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px;margin-top:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;position:relative;cursor:grab;transition:.12s}
+  .card:hover{border-color:#b9c2cc;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+  .card.drag{opacity:.4}
+  .card.over{outline:2px solid var(--brand);outline-offset:2px}
+  .thumb{width:100%;height:132px;display:flex;align-items:center;justify-content:center;background:#fafbfc;border-radius:6px;overflow:hidden}
+  .thumb img{max-width:100%;max-height:100%;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+  .thumb .ph{color:#c0c6cf;font-size:12px}
+  .meta{padding:7px 2px 2px;font-size:12px;color:var(--muted)}
+  .nm{color:var(--text);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .idx{position:absolute;top:6px;left:6px;background:var(--brand);color:#fff;font-size:11px;line-height:1;padding:4px 6px;border-radius:5px}
+  .rm{position:absolute;top:5px;right:5px;border:0;background:rgba(0,0,0,.55);color:#fff;width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;padding:0}
+  .rm:hover{background:var(--danger)}
+  .rot-row{display:flex;gap:6px;margin-top:7px}
+  .rot{flex:1;border:1px solid var(--line);background:var(--card);border-radius:6px;padding:3px 0;font-size:12px;cursor:pointer;color:var(--muted);font-family:inherit;line-height:1.4}
+  .rot:hover{border-color:var(--brand);color:var(--brand)}
+  .deg{font-size:11px;color:var(--brand);margin-left:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav" id="nav"></nav>
+  <h1>合并 PDF</h1>
+  <p class="sub">按你想要的顺序合并多个 PDF —— 拖动卡片即可调整顺序。</p>
+
+  <div class="drop" id="drop">
+    <div><b>选择 PDF 文件</b> 或把文件拖到这里</div>
+    <small id="limits">最多 20 个文件，单个 100 MB，合计 200 MB</small>
+    <input type="file" id="picker" accept="application/pdf" multiple hidden>
+  </div>
+
+  <div class="tools" id="tools">
+    <span class="lab">排序</span>
+    <button class="sort on" data-sort="orig">原始顺序</button>
+    <button class="sort" data-sort="name">按文件名</button>
+    <button class="sort" data-sort="date">按修改时间</button>
+    <span class="spacer"></span>
+    <button class="sort" id="clear">全部清除</button>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="bar">
+    <button class="primary" id="go" disabled>合并 PDF</button>
+    <span class="hint" id="hint"></span>
+  </div>
+
+  <div class="prog" id="prog"><i id="progbar"></i></div>
+  <div class="msg" id="msg"></div>
+
+  <div class="result" id="result">
+    <div class="ttl">合并完成<span id="rsum"></span></div>
+    <div class="row">
+      <a class="dl" id="rdl" href="#">下载合并后的 PDF</a>
+      <button class="ghost" id="again">再合并一次</button>
+    </div>
+    <div class="cd">文件将在 <b id="cd">--:--</b> 后自动删除，请及时下载。</div>
+  </div>
+
+  <div class="foot">
+    文件仅用于本次转换，到期自动删除。<br>
+    本站无需登录；为防滥用，按设备与网络地址做频率限制。
+  </div>
+</div>
+
+<script src="/static/nav.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+/* Limits come from the server.  Hardcoding them here is how the browser's
+   "max 20" silently drifts from PDFM_MAX_FILES after someone edits the env. */
+let CFG = { max_files: 20, max_file_mb: 100, max_task_mb: 200, min_files: 2, ttl: 3600 };
+
+const files = [];          // {file, id, seq, pages, rot, thumbUrl}
+let seq = 0, sortMode = "orig", busy = false, tick = null;
+
+const $ = s => document.querySelector(s);
+const drop = $("#drop"), picker = $("#picker"), grid = $("#grid"),
+      go = $("#go"), msg = $("#msg"), hint = $("#hint"), tools = $("#tools"),
+      prog = $("#prog"), progbar = $("#progbar"), result = $("#result");
+
+/* ---------- device fingerprint ----------
+   Client-side only, and deliberately coarse: canvas + UA + screen + tz +
+   language.  It is spoofable, which is why the server also rate-limits by IP
+   and requires both buckets to pass. */
+async function fingerprint() {
+  const c = document.createElement("canvas");
+  c.width = 220; c.height = 40;
+  const x = c.getContext("2d");
+  x.textBaseline = "top"; x.font = "15px Arial";
+  x.fillStyle = "#f60"; x.fillRect(0, 0, 110, 22);
+  x.fillStyle = "#069"; x.fillText("pdfmerge-fp-\u{1F5C4}", 2, 4);
+  const raw = [
+    c.toDataURL(),
+    navigator.userAgent,
+    screen.width + "x" + screen.height + "x" + (screen.colorDepth || 0),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    (navigator.languages || []).join(","),
+    navigator.hardwareConcurrency || 0
+  ].join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].slice(0, 16)
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+let DEVICE = "";
+
+/* Config has to be asked *with* the device id: the daily quota is keyed by it,
+   and without the header the server falls back to a user-agent bucket and
+   reports a stranger's remaining allowance -- which showed "1 left" right after
+   the job that spent it. */
+(async () => {
+  DEVICE = await fingerprint();
+  try {
+    const r = await fetch("/api/v1/config",
+                          { headers: { "X-Device-Id": DEVICE } });
+    if (!r.ok) return;
+    const c = await r.json();
+    CFG = c;
+    $("#limits").textContent =
+      `最多 ${c.max_files} 个文件，单个 ${c.max_file_mb} MB，`
+      + `合并后最多 ${c.max_pages} 页`;
+    sync();
+  } catch (e) {}
+})();
+
+/* ---------- file intake ---------- */
+drop.addEventListener("click", () => { if (!busy) picker.click(); });
+drop.addEventListener("dragover", e => {
+  if (busy) return;
+  e.preventDefault(); drop.classList.add("hot");
+});
+drop.addEventListener("dragleave", () => drop.classList.remove("hot"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("hot");
+  if (!busy) add([...e.dataTransfer.files]);
+});
+picker.addEventListener("change", e => { add([...e.target.files]); picker.value = ""; });
+
+function add(list) {
+  clearMsg(); hideResult();
+  const pdfs = list.filter(f => f.type === "application/pdf" || /\.pdf$/i.test(f.name));
+  const skipped = list.length - pdfs.length;
+  for (const f of pdfs) {
+    if (files.length >= CFG.max_files) { showMsg("err", `最多 ${CFG.max_files} 个文件`); break; }
+    if (f.size > CFG.max_file_mb * 1048576) {
+      showMsg("err", `「${f.name}」超过 ${CFG.max_file_mb} MB`); continue;
+    }
+    const item = { file: f, id: "u" + (seq++), seq: seq, pages: 0, rot: 0, thumbUrl: null };
+    files.push(item);
+    render();
+    thumb(item);
+  }
+  if (skipped > 0) showMsg("err", `已忽略 ${skipped} 个非 PDF 文件`);
+  sync();
+}
+
+/* ---------- thumbnails (browser-side, never on the server) ---------- */
+async function thumb(item) {
+  if (item.thumbUrl) return;
+  try {
+    const data = await item.file.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data }).promise;
+    item.pages = doc.numPages;
+    const page = await doc.getPage(1);
+    const vp0 = page.getViewport({ scale: 1 });
+    const scale = Math.min(150 / vp0.width, 126 / vp0.height);
+    const vp = page.getViewport({ scale });
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+    await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+    item.thumbUrl = c.toDataURL("image/jpeg", 0.8);
+    // Re-query AFTER the awaits: render() rebuilds the grid, so a node captured
+    // before the first await is often already detached.
+    paint(item);
+    // the card's own page count is not covered by sync(), which only updates
+    // the summary line -- without this the card reads "… · 917 KB" forever
+    const pc = document.getElementById("p-" + item.id);
+    if (pc) pc.textContent = item.pages + " 页";
+    sync();
+  } catch (e) {
+    const slot = document.getElementById("t-" + item.id);
+    if (slot) slot.innerHTML = '<span class="ph">无法预览</span>';
+  }
+}
+
+/* Rotation is applied to the cached thumbnail in a canvas rather than with a
+   CSS transform: a rotated <img> keeps its unrotated layout box, so a landscape
+   page would overflow the card and get clipped by the 132px slot. */
+async function paint(item) {
+  const slot = document.getElementById("t-" + item.id);
+  if (!slot) return;
+  if (!item.thumbUrl) { slot.innerHTML = '<span class="ph">加载中…</span>'; return; }
+  const deg = ((item.rot || 0) + 360) % 360;
+  if (!deg) { slot.innerHTML = `<img src="${item.thumbUrl}" alt="">`; return; }
+  item._cache = item._cache || {};
+  if (item._cache[deg]) { slot.innerHTML = `<img src="${item._cache[deg]}" alt="">`; return; }
+  const img = new Image();
+  img.src = item.thumbUrl;
+  try { await img.decode(); } catch (e) {}
+  const w = img.naturalWidth || 1, h = img.naturalHeight || 1;
+  const swap = deg % 180 !== 0;
+  const c = document.createElement("canvas");
+  c.width = swap ? h : w;
+  c.height = swap ? w : h;
+  const x = c.getContext("2d");
+  x.translate(c.width / 2, c.height / 2);
+  x.rotate(deg * Math.PI / 180);
+  x.drawImage(img, -w / 2, -h / 2);
+  item._cache[deg] = c.toDataURL("image/jpeg", 0.85);
+  const slot2 = document.getElementById("t-" + item.id);
+  if (slot2) slot2.innerHTML = `<img src="${item._cache[deg]}" alt="">`;
+}
+
+/* ---------- rendering + drag reorder ----------
+   `files` array order is the truth: it is exactly what gets merged.  A sort is
+   only a *view* over it.  The alternative -- sorting the array and keeping a
+   separate insertion index -- lets the two drift, and then the user sees one
+   order and gets another in the merged file. */
+function display() {
+  if (sortMode === "orig") return files.slice();
+  const a = files.slice();
+  if (sortMode === "name") {
+    a.sort((x, y) => x.file.name.localeCompare(y.file.name, "zh", { numeric: true }));
+  } else if (sortMode === "date") {
+    a.sort((x, y) => (x.file.lastModified || 0) - (y.file.lastModified || 0));
+  }
+  return a;
+}
+
+function render() {
+  const list = display();
+  grid.innerHTML = "";
+  list.forEach((it, i) => {
+    const d = document.createElement("div");
+    d.className = "card";
+    d.draggable = !busy;
+    d.dataset.id = it.id;
+    d.innerHTML = `
+      <span class="idx">${i + 1}</span>
+      <button class="rm" title="移除">×</button>
+      <div class="thumb" id="t-${it.id}"><span class="ph">加载中…</span></div>
+      <div class="meta">
+        <div class="nm" title="${esc(it.file.name)}">${esc(it.file.name)}</div>
+        <span id="p-${it.id}">${it.pages ? it.pages + " 页" : "…"}</span>
+        · ${mb(it.file.size)}${it.rot ? `<span class="deg">↻${((it.rot % 360) + 360) % 360}°</span>` : ""}
+      </div>
+      <div class="rot-row">
+        <button class="rot" data-dir="-90" title="左转 90°">↺</button>
+        <button class="rot" data-dir="90" title="右转 90°">↻</button>
+      </div>`;
+    d.querySelector(".rm").onclick = ev => {
+      ev.stopPropagation();
+      files.splice(files.findIndex(x => x.id === it.id), 1);
+      render(); sync(); hideResult();
+    };
+    d.querySelectorAll(".rot").forEach(b => {
+      b.onclick = ev => {
+        ev.stopPropagation();
+        it.rot = (it.rot + Number(b.dataset.dir) + 360) % 360;
+        render();
+      };
+    });
+    d.addEventListener("dragstart", e => {
+      if (busy) return;
+      d.classList.add("drag");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", it.id);
+    });
+    d.addEventListener("dragend", () => {
+      d.classList.remove("drag");
+      document.querySelectorAll(".card").forEach(c => c.classList.remove("over"));
+    });
+    d.addEventListener("dragover", e => { if (!busy) { e.preventDefault(); d.classList.add("over"); } });
+    d.addEventListener("dragleave", () => d.classList.remove("over"));
+    d.addEventListener("drop", e => {
+      e.preventDefault(); e.stopPropagation();
+      d.classList.remove("over");
+      if (busy) return;
+      const fromId = e.dataTransfer.getData("text/plain");
+      if (!fromId || fromId === it.id) return;
+      // Work in *visual* indices, then adopt that order wholesale.  Splicing
+      // the backing array by a visual index while a sort is active moves the
+      // wrong file, because the two orderings disagree.
+      const vis = display();
+      const from = vis.findIndex(x => x.id === fromId);
+      const to = vis.findIndex(x => x.id === it.id);
+      if (from < 0 || to < 0) return;
+      const [moved] = vis.splice(from, 1);
+      vis.splice(to, 0, moved);
+      files.length = 0;
+      files.push(...vis);
+      if (sortMode !== "orig") setSort("orig", true);   // keep the manual order
+      render(); sync();
+    });
+    grid.appendChild(d);
+    paint(it);
+  });
+}
+
+function setSort(mode, keepManual) {
+  if (mode === "orig" && !keepManual) {
+    // "original" means the order the files were added; a drag may have changed
+    // the array since, so restore it rather than merely re-labelling the view
+    files.sort((a, b) => a.seq - b.seq);
+  }
+  sortMode = mode;
+  document.querySelectorAll(".sort[data-sort]").forEach(b =>
+    b.classList.toggle("on", b.dataset.sort === mode));
+  render();
+}
+
+document.querySelectorAll(".sort[data-sort]").forEach(b => {
+  b.onclick = () => { if (!busy) setSort(b.dataset.sort); };
+});
+
+$("#clear").onclick = () => {
+  if (busy) return;
+  files.length = 0;
+  render(); sync(); clearMsg(); hideResult();
+};
+
+function sync() {
+  const total = files.reduce((s, f) => s + f.file.size, 0);
+  const pages = files.reduce((s, f) => s + (f.pages || 0), 0);
+  const maxPages = CFG.max_pages || 0;
+  const overPages = maxPages > 0 && pages > maxPages;
+  const overSize = total > CFG.max_task_mb * 1048576;
+  const left = (CFG.plan || {}).jobs_left;
+  // the free tier is one job a day, so "0 left" has to be visible before the
+  // user uploads 15 MB and gets a 429 after the fact
+  const noQuota = typeof left === "number" && left <= 0;
+
+  go.disabled = busy || files.length < CFG.min_files || overPages || overSize || noQuota;
+  tools.classList.toggle("on", files.length > 0);
+  hint.textContent = files.length
+    ? `${files.length} 个文件 · ${pages ? pages + " 页 · " : ""}${mb(total)}`
+      + (files.length < CFG.min_files ? ` · 至少需要 ${CFG.min_files} 个` : "")
+      + (overPages ? ` · 超出 ${maxPages} 页上限` : "")
+      + (noQuota ? " · 今日额度已用完"
+                 : (typeof left === "number" ? ` · 今天还剩 ${left} 次` : ""))
+    : "";
+
+  // the page limit is the one users hit without noticing, because a 3-file
+  // merge of 2-page invoices is already over a 5-page allowance
+  if (overPages) showMsg("err", `合并后共 ${pages} 页，免费版最多 ${maxPages} 页`);
+  else if (overSize) showMsg("err", `合计超过 ${CFG.max_task_mb} MB`);
+  else if (noQuota) showMsg("err", "今天的免费额度已用完，明天再来，或升级 Pro");
+}
+
+/* ---------- merge flow ---------- */
+go.onclick = async () => {
+  if (busy || files.length < CFG.min_files) return;
+  const list = display();          // what the user sees is what gets merged
+  busy = true;
+  setBusy(true);
+  hideResult();
+  try {
+    showMsg("info", "正在上传…");
+    const res = await fetch("/api/v1/uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({
+        files: list.map(f => ({ name: f.file.name, size: f.file.size }))
+      })
+    });
+    if (!res.ok) throw await apiError(res);
+    const { uploads } = await res.json();
+
+    // Progress is byte-weighted across the whole batch, otherwise a 40 MB file
+    // behind four 200 KB ones jumps the bar to 80% and then stalls.
+    const totalBytes = list.reduce((s, f) => s + f.file.size, 0) || 1;
+    let sentBefore = 0;
+    showProgress(0);
+    for (let i = 0; i < list.length; i++) {
+      await putFile(uploads[i].url, list[i].file, sent => {
+        const pct = Math.min(99, Math.round((sentBefore + sent) / totalBytes * 100));
+        showProgress(pct);
+        showMsg("info", `正在上传… ${i + 1}/${list.length} · ${pct}%`);
+      });
+      sentBefore += list[i].file.size;
+      showProgress(Math.round(sentBefore / totalBytes * 100));
+    }
+
+    showMsg("info", "正在合并…");
+    const jr = await fetch("/api/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({
+        files: uploads.map((u, i) => ({ file_id: u.file_id, rotate: list[i].rot || 0 }))
+      })
+    });
+    if (!jr.ok) throw await apiError(jr);
+    const job = await jr.json();
+    if ("jobs_left" in job) {
+      CFG.plan = CFG.plan || {};
+      CFG.plan.jobs_left = job.jobs_left;
+    }
+    await poll(job.job_id);
+  } catch (e) {
+    showMsg("err", e.message || "出错了，请重试");
+    showProgress(0);
+  } finally {
+    busy = false;
+    setBusy(false);
+    sync();
+  }
+};
+
+/* XHR rather than fetch: only XHR exposes upload progress. */
+function putFile(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url, true);
+    x.setRequestHeader("Content-Type", "application/pdf");
+    x.setRequestHeader("X-Device-Id", DEVICE);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) return resolve();
+      let d = {};
+      try { d = (JSON.parse(x.responseText).detail) || {}; } catch (e) {}
+      reject(new Error(d.message || `上传失败 (${x.status})`));
+    };
+    x.onerror = () => reject(new Error("网络中断，请重试"));
+    x.send(blob);
+  });
+}
+
+async function poll(jobId) {
+  for (let i = 0; i < 120; i++) {
+    await new Promise(r => setTimeout(r, 500));
+    const r = await fetch("/api/v1/jobs/" + jobId);
+    if (!r.ok) throw await apiError(r);
+    const j = await r.json();
+    if (j.status === "done") {
+      showProgress(100);
+      // a bar parked at 100% reads as a divider once the result panel appears
+      setTimeout(() => { if (!busy) showProgress(0); }, 600);
+      clearMsg();
+      showResult(j);
+      return;
+    }
+    if (j.status === "failed") {
+      throw new Error((j.error && j.error.message) || "合并失败");
+    }
+    showMsg("info", j.status === "queued"
+      ? "排队中…" + (j.queue_wait > 1 ? `（已等 ${j.queue_wait.toFixed(1)} 秒）` : "")
+      : "正在合并…");
+  }
+  throw new Error("等待超时，请重试");
+}
+
+/* ---------- result ---------- */
+function showResult(j) {
+  $("#rsum").textContent = ` · 共 ${j.pages} 页`;
+  $("#rdl").href = j.download;
+  result.classList.add("on");
+  startCountdown(typeof j.expires_in === "number" ? j.expires_in : CFG.ttl);
+  result.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function hideResult() {
+  result.classList.remove("on");
+  if (tick) { clearInterval(tick); tick = null; }
+}
+
+function startCountdown(sec) {
+  if (tick) clearInterval(tick);
+  const el = $("#cd");
+  let left = Math.max(0, sec);
+  const fmt = s => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  el.textContent = fmt(left);
+  tick = setInterval(() => {
+    left -= 1;
+    el.textContent = fmt(Math.max(0, left));
+    if (left <= 0) {
+      clearInterval(tick); tick = null;
+      el.textContent = "已过期";
+      result.classList.remove("on");
+      showMsg("err", "结果已过期删除，请重新合并。");
+    }
+  }, 1000);
+}
+
+$("#again").onclick = () => {
+  files.length = 0;
+  render(); sync(); clearMsg(); hideResult();
+  showProgress(0);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
+
+/* ---------- misc ---------- */
+function setBusy(on) {
+  drop.classList.toggle("busy", on);
+  grid.querySelectorAll(".card").forEach(c => { c.draggable = !on; });
+  go.textContent = on ? "处理中…" : "合并 PDF";
+  document.querySelectorAll(".sort").forEach(b => { b.disabled = on; });
+}
+
+function showProgress(pct) {
+  if (!pct) { prog.classList.remove("on"); progbar.style.width = "0%"; return; }
+  prog.classList.add("on");
+  progbar.style.width = pct + "%";
+}
+
+async function apiError(res) {
+  let d = {};
+  try { d = (await res.json()).detail || {}; } catch (e) {}
+  if (res.status === 429) return new Error(d.message || "请求过于频繁，请稍后再试");
+  if (res.status === 503) return new Error(d.message || "服务繁忙，请稍后重试");
+  return new Error(d.message || `请求失败 (${res.status})`);
+}
+function showMsg(kind, text) { msg.className = "msg " + kind; msg.textContent = text; }
+function clearMsg() { msg.className = "msg"; msg.textContent = ""; }
+function mb(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+</script>
+</body>
+</html>

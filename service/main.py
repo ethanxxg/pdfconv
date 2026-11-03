@@ -1,0 +1,749 @@
+"""PDF merge service -- P0 single-node reference implementation.
+
+The API contract is deliberately the production one, so moving from local disk
+to OSS/COS changes only ``storage.py``:
+
+    POST /api/v1/uploads            -> signed upload targets
+    PUT  /api/v1/uploads/{file_id}  -> raw bytes, streamed, never buffered
+    POST /api/v1/jobs               -> enqueue a merge
+    GET  /api/v1/jobs/{job_id}      -> poll status
+    GET  /api/v1/jobs/{job_id}/download
+    DELETE /api/v1/jobs/{job_id}    -> drop files early
+
+Run:  python -m uvicorn service.main:app --host 0.0.0.0 --port 8090
+"""
+import asyncio
+import json
+import os
+import time
+import uuid
+import zipfile
+
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               RedirectResponse)
+from fastapi.staticfiles import StaticFiles
+
+import pymupdf as fitz
+
+from .jobs import Runner, JobStore
+from .limits import Limiter
+from .plans import PLANS, Quota, describe, plan_of, resolve_plan
+from .storage import LocalStorage, StorageError, new_secret
+from . import tools as tool_registry
+
+# -- configuration ---------------------------------------------------------
+# Per-plan limits live in plans.py; these are the deployment-wide knobs that do
+# not change with billing.
+FREE = plan_of("free")
+MAX_FILES = FREE["max_files"]
+MAX_FILE_BYTES = FREE["max_file_mb"] * 1048576
+MAX_TASK_BYTES = FREE["max_task_mb"] * 1048576
+TTL = int(os.environ.get("PDFM_TTL", "3600"))
+WORKERS = int(os.environ.get("PDFM_WORKERS", "0")) or max(2, (os.cpu_count() or 4) - 1)
+QUEUE_MAX = int(os.environ.get("PDFM_QUEUE", "64"))
+DATA = os.environ.get("PDFM_DATA", os.path.join(os.path.dirname(__file__), "data"))
+
+# Token buckets.  Rates are per second, bursts are the instantaneous allowance.
+# The IP bucket is sized for a shared NAT (a 500-person office), the device
+# bucket for one person; both must pass.  PDFM_RATE_MULT scales both -- useful
+# when load-testing a single node, where 60 jobs/hour would mask throughput.
+_RATE_MULT = float(os.environ.get("PDFM_RATE_MULT", "1"))
+IP_UPLOAD = (240 / 3600.0 * _RATE_MULT, 60 * _RATE_MULT)
+IP_JOB = (60 / 3600.0 * _RATE_MULT, 20 * _RATE_MULT)
+DEV_JOB = (120 / 3600.0 * _RATE_MULT, 30 * _RATE_MULT)
+
+storage = LocalStorage(os.path.join(DATA, "objects"),
+                       new_secret(os.path.join(DATA, "secret.key")))
+store = JobStore()
+limiter = Limiter()
+quota = Quota()
+runner = None
+_started = time.time()
+_stats = {"uploads": 0, "jobs": 0, "rejected": 0}
+
+
+def _pid_alive(pid):
+    """Is *pid* running?  Deliberately not os.kill(pid, 0).
+
+    On Windows ``os.kill(pid, 0)`` is not a probe -- it calls TerminateProcess
+    with exit code 0 and would kill the process we are trying to check.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        QUERY = 0x1000
+        STILL_ACTIVE = 259
+        h = ctypes.windll.kernel32.OpenProcess(QUERY, False, pid)
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(h)
+        return bool(ok) and code.value == STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _instance_guard():
+    """Warn when two processes share one data dir.
+
+    Job state and the daily quota are in-process, so a second instance on the
+    same port range would answer 404 for jobs the first one created.  That looks
+    like a random failure in the browser and is invisible in the logs, so say it
+    out loud at startup instead.
+    """
+    path = os.path.join(DATA, "instance.pid")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            old = int((f.read() or "0").strip())
+    except (OSError, ValueError):
+        old = 0
+    if old and old != os.getpid() and _pid_alive(old):
+        print("WARNING: another instance (pid %d) already uses %s. Job state is "
+              "per-process -- run exactly one web process per data directory."
+              % (old, DATA), flush=True)
+    try:
+        os.makedirs(DATA, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global runner
+    _instance_guard()
+    runner = Runner(store, storage, workers=WORKERS, max_queue=QUEUE_MAX, ttl=TTL)
+
+    async def sweeper():
+        while True:
+            await asyncio.sleep(300)
+            limiter.sweep()
+            quota.sweep()
+
+    task = asyncio.create_task(sweeper())
+    yield
+    task.cancel()
+    runner.shutdown()
+
+
+app = FastAPI(title="pdfkit", version="0.2.0", lifespan=lifespan)
+
+
+# -- helpers ---------------------------------------------------------------
+def client_ip(request):
+    """Real client address behind a CDN.
+
+    Only the left-most XFF entry is meaningful; the rest can be forged by the
+    client, so trusting them would let anyone rotate their own rate-limit key.
+    """
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "0.0.0.0"
+
+
+def device_id(request):
+    d = (request.headers.get("x-device-id") or "").strip()[:64]
+    if d:
+        return d
+    # degraded fallback: no JS, or a client that strips the header
+    return "ua:" + (request.headers.get("user-agent") or "")[:48]
+
+
+def guard(request, bucket, cost=1.0):
+    """Apply both buckets; raise 429 with Retry-After on either."""
+    ip = client_ip(request)
+    dev = device_id(request)
+    ip_rate, ip_burst = bucket
+    checks = ((("ip", ip), ip_rate, ip_burst),
+              (("dev", dev), DEV_JOB[0], DEV_JOB[1]))
+    for key, rate, burst in checks:
+        ok, wait = limiter.take(key, rate, burst, cost)
+        if not ok:
+            _stats["rejected"] += 1
+            raise HTTPException(
+                status_code=429,
+                detail={"code": "rate_limited",
+                        "message": "请求过于频繁，请 %d 秒后再试" % max(1, int(wait + 0.5))},
+                headers={"Retry-After": str(max(1, int(wait + 0.5)))},
+            )
+    return ip, dev
+
+
+@app.exception_handler(StorageError)
+async def _storage_error(request, exc):
+    return JSONResponse(status_code=413,
+                        content={"code": exc.code, "message": exc.message})
+
+
+def _detect_kind(path):
+    """pdf / docx / xlsx / pptx, or None.
+
+    The zip magic is shared by all three OOXML kinds, so the container has to be
+    opened and its top-level folders inspected.  This runs before the job is
+    queued, which is the point: posting a .pptx to the Word tool must fail as a
+    400 here, not as a stack trace inside a worker after the quota is spent.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(5)
+        if head.startswith(b"%PDF-"):
+            return "pdf"
+        if not head.startswith(b"PK\x03\x04"):
+            return None
+        with zipfile.ZipFile(path) as z:
+            names = z.namelist()
+    except (OSError, zipfile.BadZipFile):
+        return None
+    if any(n.startswith("word/") for n in names):
+        return "docx"
+    if any(n.startswith("xl/") for n in names):
+        return "xlsx"
+    if any(n.startswith("ppt/") for n in names):
+        return "pptx"
+    return None
+
+
+def _detect_compress_kind(path):
+    """pdf / jpg / png, or None.
+
+    The compress task accepts both PDF and raster images, unlike the convert
+    tools (which only take PDF or one OOXML kind).  Office files are refused
+    with a clean ``wrong_type`` rather than a confusing "not a PDF" later.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(8)
+    except OSError:
+        return None
+    if head.startswith(b"%PDF-"):
+        return "pdf"
+    if head[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if head.startswith(b"\x89PNG"):
+        return "png"
+    return None
+
+
+def _safe_stem(name):
+    """Turn a user-supplied filename into a safe download stem.
+
+    It only ever reaches the Content-Disposition header, but a name carrying a
+    path separator or a newline is still worth refusing: the first is how a
+    "rename" turns into a traversal, the second is header injection.
+    """
+    base = os.path.basename(str(name or "").replace("\\", "/"))
+    base = os.path.splitext(base)[0]
+    base = "".join(ch for ch in base
+                   if ch.isprintable() and ch not in '"/\\:*?<>|').strip(" .")
+    return (base or "converted")[:80]
+
+
+def _read_progress(job):
+    """(done, total) for a running convert job, or None."""
+    path = (job.opts or {}).get("progress_path")
+    if not path:
+        return None
+    try:
+        with open(path) as f:
+            done, _, total = f.read().strip().partition("/")
+        return int(done), int(total)
+    except (OSError, ValueError):
+        return None
+
+
+def _count_pages(keys):
+    """Total pages across the uploaded files.
+
+    This runs in the API process, before the job is queued, because the daily
+    quota is consumed at submit time: a job that fails on page count inside the
+    worker would burn the user's only free attempt and hand back an error.  Only
+    the xref is parsed, so a 15 MB file costs a few milliseconds.
+    """
+    total = 0
+    for k in keys:
+        try:
+            with fitz.open(storage.path(k)) as d:
+                if d.needs_pass:
+                    raise HTTPException(400, detail={
+                        "code": "encrypted",
+                        "message": "文件已加密，请先解除密码"})
+                total += d.page_count
+        except HTTPException:
+            raise
+        except Exception:
+            raise HTTPException(400, detail={
+                "code": "bad_pdf", "message": "文件无法读取，请重新上传"})
+    return total
+
+
+# -- routes ----------------------------------------------------------------
+@app.get("/healthz")
+async def healthz():
+    return {
+        "ok": True,
+        "uptime": round(time.time() - _started, 1),
+        "workers": WORKERS,
+        "queue_depth": runner.depth() if runner else 0,
+        "jobs": len(store),
+        "buckets": len(limiter),
+        "quota_keys": len(quota),
+        "stats": _stats,
+    }
+
+
+@app.get("/api/v1/config")
+async def config(request: Request):
+    """Limits, so a page never hardcodes a number the server disagrees with.
+
+    Without this the browser's "max 20 files" drifts from PDFM_MAX_FILES the
+    first time anyone changes the environment, and the user finds out only
+    after uploading.
+    """
+    plan = resolve_plan(request)
+    used = quota.used(device_id(request))
+    return {
+        "max_files": MAX_FILES,
+        "max_file_mb": MAX_FILE_BYTES // 1048576,
+        "max_task_mb": MAX_TASK_BYTES // 1048576,
+        "max_pages": FREE["max_pages"],
+        "min_files": 2,
+        "ttl": TTL,
+        "rotations": [0, 90, 180, 270],
+        "levels": ["extreme", "recommended", "less"],
+        "ocr": plan_of(plan)["ocr"],
+        "tools": tool_registry.describe_all(),
+        "plan": describe(plan, used),
+    }
+
+
+@app.get("/api/v1/tools")
+async def tools_index():
+    """The tool grid and the shared nav both build themselves from this."""
+    return {"tools": tool_registry.describe_all()}
+
+
+@app.get("/api/v1/plans")
+async def plans_index(request: Request):
+    """Every tier, so the pricing page and the upsell card read from one source.
+
+    Free is first and current; the rest are shown but not selectable -- choosing
+    one has to go through billing, not through this endpoint.
+    """
+    here = resolve_plan(request)
+    return {
+        "current": here,
+        "plans": [dict(describe(k), current=(k == here)) for k in PLANS],
+    }
+
+
+@app.post("/api/v1/uploads")
+async def create_uploads(request: Request):
+    guard(request, (IP_UPLOAD[0], IP_UPLOAD[1]))
+    plan = plan_of(resolve_plan(request))
+    max_files = plan["max_files"]
+    max_bytes = plan["max_file_mb"] * 1048576
+    max_task = plan["max_task_mb"] * 1048576
+    body = await request.json()
+    files = body.get("files") or []
+    if not files:
+        raise HTTPException(400, detail={"code": "no_files",
+                                         "message": "没有选择文件"})
+    if len(files) > max_files:
+        raise HTTPException(400, detail={"code": "too_many_files",
+                                         "message": "最多 %d 个文件" % max_files})
+    total = 0
+    targets = []
+    for f in files:
+        size = int(f.get("size") or 0)
+        if size <= 0:
+            raise HTTPException(400, detail={"code": "bad_size",
+                                             "message": "文件为空"})
+        if size > max_bytes:
+            raise HTTPException(400, detail={
+                "code": "file_too_large",
+                "message": "单个文件不能超过 %d MB" % plan["max_file_mb"]})
+        total += size
+        fid = uuid.uuid4().hex
+        targets.append({"file_id": fid,
+                        "url": "/api/v1/uploads/" + fid,
+                        "method": "PUT",
+                        "name": (f.get("name") or "file.pdf")[:120]})
+    if total > max_task:
+        raise HTTPException(400, detail={
+            "code": "task_too_large",
+            "message": "合计不能超过 %d MB" % plan["max_task_mb"]})
+    _stats["uploads"] += len(targets)
+    return {"uploads": targets, "max_files": max_files,
+            "max_file_mb": plan["max_file_mb"]}
+
+
+@app.put("/api/v1/uploads/{file_id}")
+async def upload_body(file_id: str, request: Request):
+    key = "in/" + file_id
+    path = storage.path(key)
+    limit = plan_of(resolve_plan(request))["max_file_mb"] * 1048576
+    n = 0
+    head = b""
+    try:
+        with open(path, "wb") as f:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                n += len(chunk)
+                if n > limit:
+                    raise HTTPException(413, detail={
+                        "code": "file_too_large",
+                        "message": "文件超过 %d MB" % (limit // 1048576)})
+                if len(head) < 5:
+                    head += chunk[:5 - len(head)]
+                if len(head) >= 5 and not (
+                        head.startswith(b"%PDF-")
+                        or head.startswith(b"PK\x03\x04")
+                        or head.startswith(b"\xff\xd8\xff")
+                        or head.startswith(b"\x89PNG")):
+                        raise HTTPException(415, detail={
+                            "code": "not_pdf",
+                            "message": "不是有效的 PDF、Office 或图片文件"})
+                # keep the event loop free while the page hits the disk
+                await asyncio.to_thread(f.write, chunk)
+    except Exception:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise
+    if n == 0:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        raise HTTPException(400, detail={"code": "empty", "message": "空文件"})
+    return {"file_id": file_id, "size": n}
+
+
+@app.post("/api/v1/jobs")
+async def create_job(request: Request):
+    ip, dev = guard(request, (IP_JOB[0], IP_JOB[1]))
+    plan_name = resolve_plan(request)
+    plan = plan_of(plan_name)
+
+    # Daily allowance is checked before anything else: it is the one limit that
+    # exists for business reasons, so failing it must not consume an upload.
+    ok, _used, _left = quota.check(dev, plan_name)
+    if not ok:
+        raise HTTPException(429, detail={
+            "code": "quota_exceeded",
+            "message": "今天的 %d 次免费额度已用完，明天再来，或升级 Pro"
+                       % plan["jobs_per_day"]},
+            headers={"Retry-After": "3600"})
+
+    body = await request.json()
+    task = str(body.get("task") or "merge").strip().lower()
+    if task not in ("merge", "compress", "convert"):
+        raise HTTPException(400, detail={"code": "bad_task",
+                                         "message": "不支持的任务类型"})
+
+    # Two accepted shapes: the current one carries a per-file rotation, the
+    # flat one is what the first cut of the page sent.  Keeping both means an
+    # already-cached page does not start failing after this deploy.
+    raw = body.get("files")
+    if raw is None:
+        raw = [{"file_id": x} for x in (body.get("file_ids") or [])]
+    if not isinstance(raw, list) or not raw:
+        raise HTTPException(400, detail={"code": "bad_request",
+                                         "message": "请求格式不正确"})
+    if len(raw) > plan["max_files"]:
+        raise HTTPException(400, detail={"code": "too_many_files",
+                                         "message": "最多 %d 个文件"
+                                                    % plan["max_files"]})
+
+    if task == "merge":
+        if len(raw) < 2:
+            raise HTTPException(400, detail={"code": "need_two",
+                                             "message": "至少需要 2 个 PDF 才能合并"})
+    elif task == "convert":
+        # One PDF in, one DOCX out: merging several documents into one Word file
+        # is a different product decision, not something to guess at.
+        if len(raw) != 1:
+            raise HTTPException(400, detail={
+                "code": "one_file",
+                "message": "一次只能转换 1 个文件"})
+    elif len(raw) != 1:
+        # Batch compression is the paid hook: the free tier does one file, and
+        # saying so is better than silently compressing only the first one.
+        if not plan["batch_compress"]:
+            raise HTTPException(403, detail={
+                "code": "plan_limit",
+                "message": "免费版一次只能压缩 1 个文件，升级 Pro 可批量压缩"})
+        raise HTTPException(400, detail={"code": "not_implemented",
+                                         "message": "批量压缩尚未开放"})
+
+    fids, rots = [], []
+    for i, item in enumerate(raw):
+        if isinstance(item, str):
+            item = {"file_id": item}
+        item = item or {}
+        fid = str(item.get("file_id") or "").strip()
+        if not fid:
+            raise HTTPException(400, detail={"code": "bad_file_id",
+                                             "message": "第 %d 个文件无效" % (i + 1)})
+        try:
+            deg = int(item.get("rotate") or 0) % 360
+        except (TypeError, ValueError):
+            deg = -1
+        if deg % 90:
+            raise HTTPException(400, detail={
+                "code": "bad_rotation",
+                "message": "旋转角度只能是 90 的整数倍"})
+        fids.append(fid)
+        rots.append(deg)
+
+    level = None
+    opts = {"max_pages": plan["max_pages"]}
+    tool = None
+    if task == "compress":
+        level = str((body.get("options") or {}).get("level") or "recommended").lower()
+        if level not in plan["levels"]:
+            raise HTTPException(400, detail={"code": "bad_level",
+                                             "message": "压缩档位无效"})
+        opts["level"] = level
+    elif task == "convert":
+        tool_id = str((body.get("options") or {}).get("tool") or "pdf-to-word")
+        tool = tool_registry.get(tool_id)
+        if tool is None or tool_id in ("merge", "compress"):
+            raise HTTPException(400, detail={"code": "bad_tool",
+                                             "message": "未知的转换类型"})
+        want_ocr = bool((body.get("options") or {}).get("ocr"))
+        if want_ocr and not plan["ocr"]:
+            raise HTTPException(403, detail={
+                "code": "plan_limit",
+                "message": "OCR 识别是 Pro 功能，免费版只能转换带文字层的 PDF"})
+        opts["ocr"] = want_ocr
+        opts["tool"] = tool_id
+        opts["src"] = tool["src"]
+        opts["dst"] = tool["dst"]
+        # For Office -> PDF the output page count cannot be known before
+        # rendering, and the allowance is already spent by then.  Failing a
+        # job for being "too many pages" after charging for it is the exact
+        # anti-pattern the PDF path avoids by pre-counting, so this direction
+        # gets the hard ceiling instead of the plan's small number.  The 20 MB
+        # input cap is what bounds abuse here.
+        if tool["src"] != "pdf":
+            opts["max_pages"] = 5000
+        # Carried only to name the downloaded file; never used to build a path.
+        opts["name"] = _safe_stem((body.get("options") or {}).get("name"))
+
+    keys = ["in/" + f for f in fids]
+    total = 0
+    for k in keys:
+        s = storage.size(k)
+        if s <= 0:
+            raise HTTPException(400, detail={
+                "code": "missing_file",
+                "message": "文件已过期或未上传完成，请重新上传"})
+        total += s
+    if total > plan["max_task_mb"] * 1048576:
+        raise HTTPException(400, detail={
+            "code": "task_too_large",
+            "message": "合计不能超过 %d MB" % plan["max_task_mb"]})
+
+    if tool is not None:
+        # The declared extension is a claim; the container is the fact.
+        kind = await asyncio.to_thread(_detect_kind, storage.path(keys[0]))
+        if kind != tool["src"]:
+            raise HTTPException(400, detail={
+                "code": "wrong_type",
+                "message": "这个工具需要 %s 文件，请换一个工具或换一个文件"
+                           % tool["src"].upper()})
+
+    if task == "compress":
+        # PDF, JPEG and PNG are all valid inputs; everything else is refused
+        # here with a clean message instead of a stack trace in the worker.
+        ckind = await asyncio.to_thread(_detect_compress_kind,
+                                        storage.path(keys[0]))
+        if ckind is None:
+            raise HTTPException(400, detail={
+                "code": "wrong_type",
+                "message": "压缩仅支持 PDF、JPG 和 PNG 文件"})
+        opts["src_kind"] = ckind
+        opts["out_ext"] = {"pdf": ".pdf", "jpg": ".jpg", "png": ".png"}[ckind]
+        opts["name"] = _safe_stem((body.get("options") or {}).get("name"))
+
+    # Page counting only applies to PDF inputs.  Merge and any PDF-source task
+    # are PDF; Office -> PDF is checked in the worker (its page count is unknown
+    # before rendering); image inputs have no pages at all, so the free-tier
+    # page cap must not fire on them.
+    src_is_pdf = (task == "merge"
+                  or (tool is not None and tool["src"] == "pdf")
+                  or (task == "compress" and opts.get("src_kind") == "pdf"))
+    if src_is_pdf:
+        pages = await asyncio.to_thread(_count_pages, keys)
+        if pages > plan["max_pages"]:
+            raise HTTPException(400, detail={
+                "code": "too_many_pages",
+                "message": "共 %d 页，%s最多 %d 页" % (pages, plan["name"],
+                                                    plan["max_pages"])})
+
+    job = store.create(keys, dev, ip, rots, kind=task, opts=opts)
+    out_path = storage.path(job.out_key)
+    if task == "convert":
+        # The worker is a separate process; this file is how its per-page
+        # counter gets back to the polling loop.
+        job.opts["progress_path"] = out_path + ".progress"
+    try:
+        runner.submit(job, [storage.path(k) for k in keys], out_path)
+    except RuntimeError:
+        store.drop(job.id)
+        raise HTTPException(503, detail={
+            "code": "busy",
+            "message": "服务繁忙，请稍后重试"},
+            headers={"Retry-After": "5"})
+    # consume only after the job is actually queued, so a rejected request or a
+    # full queue never burns someone's daily allowance
+    quota.take(dev)
+    _stats["jobs"] += 1
+
+    return {"job_id": job.id, "task": task, "status": job.status,
+            "queue_depth": runner.depth(),
+            "jobs_left": quota.check(dev, plan_name)[2]}
+
+
+@app.get("/api/v1/jobs/{job_id}")
+async def job_status(job_id: str):
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(404, detail={"code": "not_found",
+                                         "message": "任务不存在或已过期"})
+    d = job.as_dict(ttl=TTL)
+    if job.status == "done":
+        d["download"] = storage.sign(job.out_key, ttl=900)
+    elif job.status == "running" and job.kind == "convert":
+        # Conversion is ~4 s/page, so "running" with no counter looks hung.
+        p = _read_progress(job)
+        if p:
+            d["progress"] = {"done": p[0], "total": p[1]}
+    return d
+
+
+@app.get("/api/v1/jobs/{job_id}/download")
+async def job_download(job_id: str):
+    job = store.get(job_id)
+    if job is None or job.status != "done":
+        raise HTTPException(404, detail={"code": "not_ready",
+                                         "message": "文件尚未生成"})
+    return {"url": storage.sign(job.out_key, ttl=900)}
+
+
+@app.delete("/api/v1/jobs/{job_id}")
+async def job_delete(job_id: str):
+    job = store.get(job_id)
+    if job is None:
+        return {"ok": True}
+    runner.cancel(job)
+    return {"ok": True}
+
+
+@app.get("/api/v1/download/{key:path}")
+async def signed_download(key: str, exp: str = "", sig: str = ""):
+    if not storage.verify(key, exp, sig):
+        raise HTTPException(403, detail={"code": "bad_signature",
+                                         "message": "链接无效或已过期"})
+    path = storage.path(key)
+    if not os.path.exists(path):
+        raise HTTPException(404, detail={"code": "gone", "message": "文件已删除"})
+
+    # The key carries the extension precisely so this route does not have to
+    # guess: a DOCX sent as application/pdf is a file Word refuses to open.
+    ext = os.path.splitext(key)[1].lower()
+    kind = {".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx",
+            ".jpg": "jpg", ".jpeg": "jpg", ".png": "png"}.get(ext, "pdf")
+    media = tool_registry.MIME.get(kind, "application/pdf")
+    job = store.get(os.path.splitext(os.path.basename(key))[0])
+    stem = ((job.opts or {}).get("name") if job else None)
+    if job is not None and job.kind in ("convert", "compress"):
+        name = (stem or "compressed") + ext
+    elif key.startswith("out/"):
+        name = "merged.pdf"
+    else:
+        name = "input.pdf"
+    return FileResponse(path, media_type=media, filename=name,
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.get("/")
+async def index():
+    page = os.path.join(os.path.dirname(__file__), "static", "index.html")
+    return FileResponse(page, media_type="text/html")
+
+
+@app.get("/compress")
+async def compress_page():
+    page = os.path.join(os.path.dirname(__file__), "static", "compress.html")
+    return FileResponse(page, media_type="text/html")
+
+
+@app.get("/word")
+async def word_page():
+    # Kept so links issued before the tool grid existed keep working.
+    return RedirectResponse("/convert/pdf-to-word", status_code=307)
+
+
+@app.get("/tools")
+async def tools_page():
+    page = os.path.join(os.path.dirname(__file__), "static", "tools.html")
+    return FileResponse(page, media_type="text/html")
+
+
+@app.get("/convert/{tool_id}")
+async def convert_page(tool_id: str):
+    """One template, eight tools.
+
+    The page is rendered per request with its tool baked in, rather than
+    fetching the config afterwards: a tool page that briefly shows the wrong
+    title and file types is worse than one that arrives correct.
+    """
+    tool = tool_registry.get(tool_id)
+    if tool is None or tool_id in ("merge", "compress"):
+        raise HTTPException(404, detail={"code": "no_such_tool",
+                                         "message": "没有这个工具"})
+    page = os.path.join(os.path.dirname(__file__), "static", "convert.html")
+    with open(page, encoding="utf-8") as f:
+        html = f.read()
+    accept = tool.get("accept") or [".pdf"]
+    payload = {
+        "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
+        "src": tool["src"], "dst": tool["dst"],
+        "action": tool.get("action"), "result": tool.get("result"),
+        "accept": accept,
+        "mime": tool.get("mime") or "application/pdf",
+        "warn": tool.get("warn"),
+        "ocr": tool["src"] == "pdf",
+    }
+    subs = {
+        "__TOOL_JSON__": json.dumps(payload, ensure_ascii=False),
+        "__TITLE__": tool["title"],
+        "__SUB__": tool["sub"],
+        "__ACTION__": tool.get("action") or "开始转换",
+        "__RESULT__": tool.get("result") or "下载文件",
+        "__ACCEPT__": ",".join(accept),
+        "__SRC_UP__": tool["src"].upper(),
+    }
+    for k, v in subs.items():
+        html = html.replace(k, v)
+    return HTMLResponse(html)
+
+
+# One stylesheet for every tool page: the palette and the drop zone were being
+# copied per page, which is how two tools end up looking like two products.
+app.mount("/static", StaticFiles(directory=os.path.join(
+    os.path.dirname(__file__), "static")), name="static")

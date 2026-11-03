@@ -272,3 +272,9 @@ nul
 .workbuddy-ai/
 .pytest_cache/
 ~$*
+
+# --- pdfmerge 服务运行期数据（上传件、合并结果、密钥、测试夹具）---
+service/data*/
+# 服务端持久化密钥，绝不入库
+secret.key
+**/secret.key

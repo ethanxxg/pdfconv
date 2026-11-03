@@ -1,0 +1,42 @@
+# docker compose -f service/docker-compose.yml up -d --build
+#
+# One container = one web process.  Do not scale this service with
+# `--scale`: job state lives in the process, so a scaled replica would answer
+# 404 for jobs created by its sibling.  Scale by adding machines behind a load
+# balancer only after job state moves to Redis.
+services:
+  pdfkit:
+    build:
+      context: ..
+      dockerfile: service/Dockerfile
+    image: pdfkit:0.2
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      PDFM_DATA: /data
+      # PDF child processes. Roughly cpu_count - 1; each costs ~120 MB RSS.
+      PDFM_WORKERS: "4"
+      PDFM_QUEUE: "64"
+      PDFM_TTL: "3600"
+      PDFM_MAX_FILE_MB: "20"
+      PDFM_MAX_PAGES: "5"
+      PDFM_FREE_JOBS_PER_DAY: "1"
+      # Set this in .env when running more than one node, otherwise every node
+      # signs download links with its own secret and links break across nodes.
+      # PDFM_SECRET: ${PDFM_SECRET}
+    volumes:
+      - pdfdata:/data
+    deploy:
+      resources:
+        limits:
+          memory: 2g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;o=urllib.request.build_opener(urllib.request.ProxyHandler({}));sys.exit(0 if o.open('http://127.0.0.1:8090/healthz',timeout=2).status==200 else 1)"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  pdfdata:
