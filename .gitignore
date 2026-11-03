@@ -218,3 +218,57 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ===========================================================================
+# pdfconv —— 项目特定规则
+#
+# 原则：只提交「源码 + 构建脚本 + 文档」，不提交任何可以重新生成的产物、
+# 第三方 SDK、语料或临时工作区。仓库体积应保持在 ~20 MB（含 OCR 模型）。
+# ===========================================================================
+
+# --- PyInstaller / Inno Setup 手写脚本必须保留（模板默认忽略 *.spec）---
+!app/DocForge.spec
+!app/DocForge_onedir.spec
+
+# --- 构建产物与中间目录 ---
+build/
+dist/
+out/
+*.manifest
+
+# --- 第三方 SDK（3.7 GB，商业授权，不得再分发）---
+aspose.total_*.zip
+
+# --- 语料与转换结果（版权论文 + 生成物，体积 2.2 GB）---
+docs/*.pdf
+docs/to_docx/
+docs/to_docx_own/
+docs/to_docx_*/
+docs/.tmp_*
+docs/~$*
+
+# --- 临时工作区与对比渲染 ---
+work/
+_cmp/
+render_*/
+src_pages/
+out_pages/
+
+# --- 调试 dump 与构建日志 ---
+pages-*.json
+build_pyinstaller*.log
+*.log
+!docs/**/*.log
+
+# --- doccore（C++ 子项目）的编译产物与生成夹具 ---
+doccore/build/
+doccore/out/
+doccore/tests/data/
+
+# --- 误建的空文件（Windows 重定向产生）---
+nul
+
+# --- 本地工具/会话数据 ---
+.workbuddy-ai/
+.pytest_cache/
+~$*

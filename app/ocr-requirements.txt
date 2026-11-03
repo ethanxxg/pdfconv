@@ -1,0 +1,5 @@
+# 可选：OCR（扫描件 / 乱码文本识别）。
+# 装不上不影响主程序，只是关闭 OCR；构建脚本会尽力安装、失败则跳过。
+# 若你的 Python 版本没有 wheel，建议改用 Python 3.11 / 3.12 再装。
+rapidocr_onnxruntime
+onnxruntime
