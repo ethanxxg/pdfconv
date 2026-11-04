@@ -94,6 +94,13 @@ TOOLS = {
         "result": "下载 PDF", "accept": [".jpg", ".jpeg", ".png"],
         "mime": "image/jpeg",
     },
+    "pdfa": {
+        "id": "pdfa", "label": "PDF 转 PDF/A", "path": "/pdfa",
+        "title": "PDF 转 PDF/A", "src": "pdf", "dst": "pdf",
+        "sub": "转成长期归档格式：字体全部嵌入、写入 sRGB 色彩描述，十年后打开仍不走样。",
+        "icon": "pdfa", "action": "转换为 PDF/A", "result": "下载 PDF/A",
+        "accept": [".pdf"], "mime": "application/pdf",
+    },
     "pdf-to-word": {
         "id": "pdf-to-word", "label": "PDF 转 Word",
         "path": "/convert/pdf-to-word",
@@ -151,12 +158,13 @@ ORDER = ["pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
          "word-to-pdf", "excel-to-pdf", "ppt-to-pdf",
          "merge", "compress",
          "split", "extract", "delete", "rotate",
-         "pdf-to-image", "image-to-pdf"]
+         "pdf-to-image", "image-to-pdf", "pdfa"]
 
 # Conversions that go through the generic /convert page (everything else has a
-# bespoke page because the interaction is genuinely different).
-CONVERT_TOOLS = [t for t in ORDER if t.startswith(("pdf-to-", "word-to-",
-                                                   "excel-to-", "ppt-to-"))]
+# bespoke page because the interaction is genuinely different).  Key off the
+# path, not the id: `pdf-to-image` shares the `pdf-to-` prefix but has its own
+# /media page with dpi / format controls.
+CONVERT_TOOLS = [t for t in ORDER if TOOLS[t]["path"].startswith("/convert/")]
 
 
 def get(name):

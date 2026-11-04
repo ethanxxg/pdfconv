@@ -449,7 +449,7 @@ async def create_job(request: Request):
 
     body = await request.json()
     task = str(body.get("task") or "merge").strip().lower()
-    if task not in ("merge", "compress", "convert", "pages", "media"):
+    if task not in ("merge", "compress", "convert", "pages", "media", "pdfa"):
         raise HTTPException(400, detail={"code": "bad_task",
                                          "message": "不支持的任务类型"})
 
@@ -485,6 +485,13 @@ async def create_job(request: Request):
             raise HTTPException(400, detail={
                 "code": "one_file",
                 "message": "一次只能处理 1 个 PDF"})
+    elif task == "pdfa":
+        # Archiving is per document: the XMP and output intent describe one
+        # file, so merging several into one PDF/A would be a different tool.
+        if len(raw) != 1:
+            raise HTTPException(400, detail={
+                "code": "one_file",
+                "message": "一次只能归档 1 个 PDF"})
     elif task == "media":
         mop = str((body.get("options") or {}).get("op") or "").strip().lower()
         if mop == "pdf2img":
@@ -635,6 +642,19 @@ async def create_job(request: Request):
                     "code": "bad_dpi",
                     "message": "分辨率只能是 72 / 150 / 300 DPI"})
             opts["dpi"] = dpi
+    elif task == "pdfa":
+        o = body.get("options") or {}
+        # Level B only: level A additionally requires correct tagging and a
+        # logical structure tree, which cannot be invented for an arbitrary
+        # input PDF.
+        part = str(o.get("part") or "2").strip().lower().rstrip("b")
+        if part not in ("2", "3"):
+            raise HTTPException(400, detail={
+                "code": "bad_part",
+                "message": "PDF/A 版本只能是 2b 或 3b"})
+        opts["part"] = part
+        # Only names the download; never used to build a path.
+        opts["name"] = _safe_stem(o.get("name"))
 
     keys = ["in/" + f for f in fids]
     total = 0
@@ -672,14 +692,15 @@ async def create_job(request: Request):
         opts["out_ext"] = {"pdf": ".pdf", "jpg": ".jpg", "png": ".png"}[ckind]
         opts["name"] = _safe_stem((body.get("options") or {}).get("name"))
 
-    if task == "pages":
-        # Page tools are PDF-only.  Refuse a .docx here with a clean message
-        # instead of letting it reach the worker and fail on fitz.open.
+    if task in ("pages", "pdfa"):
+        # Both are PDF-only.  Refuse a .docx here with a clean message instead
+        # of letting it reach the worker and fail on fitz.open.
         pkind = await asyncio.to_thread(_detect_kind, storage.path(keys[0]))
         if pkind != "pdf":
             raise HTTPException(400, detail={
                 "code": "wrong_type",
-                "message": "页面工具只支持 PDF 文件"})
+                "message": ("页面工具只支持 PDF 文件" if task == "pages"
+                            else "PDF/A 归档只支持 PDF 文件")})
 
     if task == "media":
         if opts["op"] == "pdf2img":
@@ -703,7 +724,7 @@ async def create_job(request: Request):
     # are PDF; Office -> PDF is checked in the worker (its page count is unknown
     # before rendering); image inputs have no pages at all, so the free-tier
     # page cap must not fire on them.
-    src_is_pdf = (task in ("merge", "pages")
+    src_is_pdf = (task in ("merge", "pages", "pdfa")
                   or (tool is not None and tool["src"] == "pdf")
                   or (task == "compress" and opts.get("src_kind") == "pdf"))
     if src_is_pdf:
@@ -808,7 +829,7 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
     job = store.get(os.path.splitext(os.path.basename(key))[0])
     stem = ((job.opts or {}).get("name") if job else None)
     if job is not None and job.kind in ("convert", "compress", "pages",
-                                        "media"):
+                                        "media", "pdfa"):
         op = (job.opts or {}).get("op")
         zipped = ((job.kind == "pages" and op == "split")
                   or (job.kind == "media" and op == "pdf2img"))
@@ -816,7 +837,8 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
             name = (stem or "output") + ".zip"
         else:
             default = {"convert": "converted", "compress": "compressed",
-                       "pages": "pages", "media": "images"}[job.kind]
+                       "pages": "pages", "media": "images",
+                       "pdfa": "archive"}[job.kind]
             name = (stem or default) + ext
     elif key.startswith("out/"):
         name = "merged.pdf"
@@ -966,6 +988,40 @@ async def media_page(tool_id: str):
         "result": tool.get("result") or "下载文件",
     }
     page = os.path.join(os.path.dirname(__file__), "static", tpl)
+    with open(page, encoding="utf-8") as f:
+        html = f.read()
+    subs = {
+        "__TOOL_JSON__": json.dumps(payload, ensure_ascii=False),
+        "__TITLE__": tool["title"],
+        "__SUB__": tool["sub"],
+        "__ACTION__": payload["action"],
+        "__RESULT__": payload["result"],
+        "__ACCEPT__": ",".join(payload["accept"]),
+    }
+    for k, v in subs.items():
+        html = html.replace(k, v)
+    return HTMLResponse(html)
+
+
+@app.get("/pdfa")
+async def pdfa_page():
+    """PDF -> PDF/A archival conversion.
+
+    A bespoke page rather than the generic convert template: the output is a
+    PDF again, and the interesting part of the result is the conformance report
+    (which part, whether every font got embedded), not a page count.
+    """
+    tool = tool_registry.get("pdfa")
+    if tool is None:
+        raise HTTPException(404, detail={"code": "no_such_tool",
+                                         "message": "没有这个工具"})
+    payload = {
+        "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
+        "accept": tool.get("accept") or [".pdf"],
+        "action": tool.get("action") or "转换为 PDF/A",
+        "result": tool.get("result") or "下载 PDF/A",
+    }
+    page = os.path.join(os.path.dirname(__file__), "static", "pdfa.html")
     with open(page, encoding="utf-8") as f:
         html = f.read()
     subs = {

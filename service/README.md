@@ -1,6 +1,6 @@
-# pdfkit —— 在线 PDF 工具（14 个工具）
+# pdfkit —— 在线 PDF 工具（15 个工具）
 
-十四个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
+十五个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
 `service/tools.py` 一张表里，页面、导航、路由、校验全部从它派生——加一个转换
 是加一行，不是再抄一份页面。
 
@@ -20,9 +20,10 @@
 | 旋转页面 | `/pages/rotate` | 旋转全部/指定页 → 一个 PDF |
 | PDF 转图片 | `/media/pdf-to-image` | PDF → 每页一张 PNG/JPG（zip） |
 | 图片转 PDF | `/media/image-to-pdf` | 多张 JPG/PNG → 一个 PDF |
+| 转换 PDF/A | `/pdfa` | PDF → PDF/A-2b 或 3b（长期归档） |
 | 全部工具 | `/tools` | 工具网格 |
 
-合并、压缩、四个页面工具与两个图片工具是自研实现；六个转换方向复用
+合并、压缩、四个页面工具、两个图片工具与 PDF/A 归档是自研实现；六个转换方向复用
 本仓库的 `pdfconv/` 引擎。本文档同时是
 **容量模型的依据**，所有数字都来自本机实测，不是估算。
 
@@ -32,6 +33,7 @@ service/
   merge.py         合并任务体（进程池内运行）
   pages.py         页面工具任务体：拆分/提取/删除/旋转（进程池内运行）
   media.py         图片工具任务体：PDF 转图片 / 图片转 PDF（进程池内运行）
+  pdfa.py          PDF/A 归档任务体（进程池内运行）
   jobs.py          任务状态机 + 有界队列 + 进程池
   storage.py       存储抽象（本地盘 → OSS/COS 只改这一个文件）
   limits.py        双桶令牌限流（IP + 设备指纹）
@@ -255,6 +257,21 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
 - pdf → xlsx 的「工作表数」取自产物文件本身，不是引擎返回值：引擎返回的是它写了
   几个表格页，而它还会额外加 `Overview`/`Text` 页，直接显示会自相矛盾。
 
+### PDF/A 归档的边界
+
+`/pdfa` 用 PyMuPDF 的原语自己拼归档合规性，没有引入额外的重依赖：
+
+- `subset_fonts()` 收紧字体，再把 sRGB 的 ICC 描述写成原始 xref 流
+  （`/N 3`、`/Alternate /DeviceRGB`），挂到 `/OutputIntent` 的 `/GTS_PDFA1`；
+  XMP 里写 `pdfaid:part`（2 或 3）+ `pdfaid:conformance B`。所以返回的是
+  `PDF/A-2b` / `PDF/A-3b`，**只承诺 b 级**：不声称满足 a 级的结构化标签要求。
+- 清掉归档禁止的构造：`/S /JavaScript` 的 OpenAction、`Names/JavaScript`、
+  `/AA`、`/XFA`；2b 还移除 `/EmbeddedFiles`（3b 允许附件，故保留）。合法的
+  `/Dests` 与指向页面的 `OpenAction [2 0 R /Fit]` 要留住，不能一刀切删字典。
+- 字体嵌入会逐项审计并如实返回 `{fonts_embedded, fonts_total, warnings}`。
+  base-14 字体（Helvetica 等）没有可嵌入的字形数据，报 warning 而不是假装合规
+  ——这是「尽力归档 + 明示残留」，不是认证过的 PDF/A 校验器。
+
 ### 付费分层怎么接
 
 所有限额集中在 `plans.py` 的 `PLANS` 表里，业务代码只读这张表：
@@ -325,8 +342,12 @@ python -m uvicorn service.main:app --host 0.0.0.0 --port 8090 --workers 1
 
 ```bash
 python service/test_e2e.py        # 14 项合并端到端断言
-python service/test_compress.py   # 8 项压缩端到端断言（含「不会变大」）
+python service/test_compress.py   # 11 项压缩端到端断言（含「不会变大」）
 python service/test_convert.py    # 12 项：六个方向全跑 + 四类拒绝
+python service/test_pages.py      # 12 项：拆分 / 提取 / 删除 / 旋转 + 拒绝
+python service/test_media.py      # 10 项：PDF 转图片 / 图片转 PDF + 拒绝
+python service/test_ocr.py        # 4 项：扫描件转文字 + 数字 PDF 无副作用
+python service/test_pdfa.py       # 10 项：PDF/A-2b/3b + 拒绝 + 合规断言
 python service/test_limits.py     # 用生产默认值验证 5 页 / 20 MB / 1 次 / 无批量
 python service/shot_ui.py         # 合并页：真实浏览器跑一遍全部交互
 python service/shot_compress.py   # 压缩页：真实浏览器跑两条路径并截图
@@ -335,7 +356,7 @@ python service/shot_limits.py     # 浏览器里验证限额拦截与额度耗�
 python service/load_test.py 60    # 60 个并发任务
 ```
 
-这八个套件**都自己起服务**，不需要先手动启动，也不会和正在跑的实例抢端口。
+这十二个端到端套件**都自己起服务**，不需要先手动启动，也不会和正在跑的实例抢端口。
 区别只在限额：
 
 * `test_e2e` / `test_compress` / `test_convert` / `shot_ui` / `shot_compress` /
@@ -385,7 +406,7 @@ pdfkit
   note  : binding 0.0.0.0 exposes this to your network; there is no login by design
   merge : http://127.0.0.1:8090/
   compress: http://127.0.0.1:8090/compress
-  convert : http://127.0.0.1:8090/tools  (14 个工具 / 6 个转换方向)
+  convert : http://127.0.0.1:8090/tools  (15 个工具 / 6 个转换方向)
   workers: 7 PDF processes, 1 web process
   data   : C:\...\service\data
 ```

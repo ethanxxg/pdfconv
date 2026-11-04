@@ -21,6 +21,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import uvicorn
 
+from service import tools
+
 
 def lan_ip():
     """Best-effort address other devices can use. No packet is actually sent."""
@@ -60,7 +62,8 @@ def main():
               " there is no login by design")
     print("  merge : http://127.0.0.1:%d/" % args.port)
     print("  compress: http://127.0.0.1:%d/compress" % args.port)
-    print("  convert : http://127.0.0.1:%d/tools  (6 directions)" % args.port)
+    print("  convert : http://127.0.0.1:%d/tools  (%d tools / %d directions)" % (
+        args.port, len(tools.ORDER), len(tools.CONVERT_TOOLS)))
     print("  workers: %d PDF processes, 1 web process" % workers)
     print("  data   : %s" % os.environ.get(
         "PDFM_DATA", os.path.join(os.path.dirname(__file__), "data")))
