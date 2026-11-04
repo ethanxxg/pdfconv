@@ -449,7 +449,7 @@ async def create_job(request: Request):
 
     body = await request.json()
     task = str(body.get("task") or "merge").strip().lower()
-    if task not in ("merge", "compress", "convert", "pages"):
+    if task not in ("merge", "compress", "convert", "pages", "media"):
         raise HTTPException(400, detail={"code": "bad_task",
                                          "message": "不支持的任务类型"})
 
@@ -485,6 +485,20 @@ async def create_job(request: Request):
             raise HTTPException(400, detail={
                 "code": "one_file",
                 "message": "一次只能处理 1 个 PDF"})
+    elif task == "media":
+        mop = str((body.get("options") or {}).get("op") or "").strip().lower()
+        if mop == "pdf2img":
+            if len(raw) != 1:
+                raise HTTPException(400, detail={
+                    "code": "one_file",
+                    "message": "PDF 转图片一次只能处理 1 个 PDF"})
+        elif mop == "img2pdf":
+            if not raw:
+                raise HTTPException(400, detail={
+                    "code": "no_files", "message": "没有选择图片"})
+        else:
+            raise HTTPException(400, detail={"code": "bad_op",
+                                             "message": "未知的图片操作"})
     elif len(raw) != 1:
         # Batch compression is the paid hook: the free tier does one file, and
         # saying so is better than silently compressing only the first one.
@@ -596,6 +610,31 @@ async def create_job(request: Request):
             spec = str(o.get("pages") or "").strip()
             if spec:
                 opts["pages"] = spec
+    elif task == "media":
+        o = body.get("options") or {}
+        op = str(o.get("op") or "").strip().lower()
+        if op not in ("pdf2img", "img2pdf"):
+            raise HTTPException(400, detail={"code": "bad_op",
+                                             "message": "未知的图片操作"})
+        opts["op"] = op
+        opts["name"] = _safe_stem(o.get("name"))
+        if op == "pdf2img":
+            fmt = str(o.get("fmt") or "png").lower()
+            if fmt in ("jpg", "jpeg"):
+                fmt = "jpg"
+            elif fmt != "png":
+                raise HTTPException(400, detail={
+                    "code": "bad_fmt", "message": "图片格式只能是 PNG 或 JPG"})
+            opts["fmt"] = fmt
+            try:
+                dpi = int(o.get("dpi") or 150)
+            except (TypeError, ValueError):
+                dpi = 0
+            if dpi not in (72, 150, 300):
+                raise HTTPException(400, detail={
+                    "code": "bad_dpi",
+                    "message": "分辨率只能是 72 / 150 / 300 DPI"})
+            opts["dpi"] = dpi
 
     keys = ["in/" + f for f in fids]
     total = 0
@@ -642,6 +681,24 @@ async def create_job(request: Request):
                 "code": "wrong_type",
                 "message": "页面工具只支持 PDF 文件"})
 
+    if task == "media":
+        if opts["op"] == "pdf2img":
+            mkind = await asyncio.to_thread(_detect_kind, storage.path(keys[0]))
+            if mkind != "pdf":
+                raise HTTPException(400, detail={
+                    "code": "wrong_type",
+                    "message": "PDF 转图片需要 PDF 文件"})
+        else:
+            # Every input must be a real JPEG/PNG, judged by magic bytes.
+            for i, k in enumerate(keys):
+                ik = await asyncio.to_thread(_detect_compress_kind,
+                                             storage.path(k))
+                if ik not in ("jpg", "png"):
+                    raise HTTPException(400, detail={
+                        "code": "wrong_type",
+                        "message": "第 %d 个文件不是 JPG 或 PNG 图片"
+                                   % (i + 1)})
+
     # Page counting only applies to PDF inputs.  Merge and any PDF-source task
     # are PDF; Office -> PDF is checked in the worker (its page count is unknown
     # before rendering); image inputs have no pages at all, so the free-tier
@@ -656,6 +713,22 @@ async def create_job(request: Request):
                 "code": "too_many_pages",
                 "message": "共 %d 页，%s最多 %d 页" % (pages, plan["name"],
                                                     plan["max_pages"])})
+
+    if task == "media":
+        # pdf2img is bounded by the PDF's page count; img2pdf by the number of
+        # images (one page each).  Neither goes through src_is_pdf.
+        if opts["op"] == "pdf2img":
+            pages = await asyncio.to_thread(_count_pages, keys)
+            if pages > plan["max_pages"]:
+                raise HTTPException(400, detail={
+                    "code": "too_many_pages",
+                    "message": "共 %d 页，%s最多 %d 页"
+                               % (pages, plan["name"], plan["max_pages"])})
+        elif len(keys) > plan["max_pages"]:
+            raise HTTPException(400, detail={
+                "code": "too_many_pages",
+                "message": "共 %d 张图片，%s最多 %d 页"
+                           % (len(keys), plan["name"], plan["max_pages"])})
 
     job = store.create(keys, dev, ip, rots, kind=task, opts=opts)
     out_path = storage.path(job.out_key)
@@ -734,11 +807,16 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
     media = tool_registry.MIME.get(kind, "application/pdf")
     job = store.get(os.path.splitext(os.path.basename(key))[0])
     stem = ((job.opts or {}).get("name") if job else None)
-    if job is not None and job.kind in ("convert", "compress", "pages"):
-        if job.kind == "pages" and (job.opts or {}).get("op") == "split":
-            name = (stem or "split") + ".zip"
+    if job is not None and job.kind in ("convert", "compress", "pages",
+                                        "media"):
+        op = (job.opts or {}).get("op")
+        zipped = ((job.kind == "pages" and op == "split")
+                  or (job.kind == "media" and op == "pdf2img"))
+        if zipped:
+            name = (stem or "output") + ".zip"
         else:
-            default = "pages" if job.kind == "pages" else "compressed"
+            default = {"convert": "converted", "compress": "compressed",
+                       "pages": "pages", "media": "images"}[job.kind]
             name = (stem or default) + ext
     elif key.startswith("out/"):
         name = "merged.pdf"
@@ -860,6 +938,43 @@ async def pages_page(tool_id: str):
         "__RESULT__": payload["result"],
         "__ACCEPT__": ",".join(accept),
         "__SRC_UP__": tool["src"].upper(),
+    }
+    for k, v in subs.items():
+        html = html.replace(k, v)
+    return HTMLResponse(html)
+
+
+@app.get("/media/{tool_id}")
+async def media_page(tool_id: str):
+    """PDF -> image and image -> PDF.
+
+    Two templates because the interactions genuinely differ: one PDF in vs many
+    images in.  The tool is baked in per request, like the other tool pages.
+    """
+    tool = tool_registry.get(tool_id)
+    if tool is None or tool.get("op") not in ("pdf2img", "img2pdf"):
+        raise HTTPException(404, detail={"code": "no_such_tool",
+                                         "message": "没有这个工具"})
+    op = tool["op"]
+    tpl = "pdf2image.html" if op == "pdf2img" else "image2pdf.html"
+    payload = {
+        "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
+        "op": op, "dst": tool["dst"],
+        "accept": tool.get("accept") or [".pdf"],
+        "mime": tool.get("mime") or "application/pdf",
+        "action": tool.get("action") or "开始处理",
+        "result": tool.get("result") or "下载文件",
+    }
+    page = os.path.join(os.path.dirname(__file__), "static", tpl)
+    with open(page, encoding="utf-8") as f:
+        html = f.read()
+    subs = {
+        "__TOOL_JSON__": json.dumps(payload, ensure_ascii=False),
+        "__TITLE__": tool["title"],
+        "__SUB__": tool["sub"],
+        "__ACTION__": payload["action"],
+        "__RESULT__": payload["result"],
+        "__ACCEPT__": ",".join(payload["accept"]),
     }
     for k, v in subs.items():
         html = html.replace(k, v)

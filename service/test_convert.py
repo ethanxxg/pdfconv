@@ -113,8 +113,9 @@ print("   %d tools: %s" % (len(ids), ", ".join(ids)))
 CORE = {"merge", "compress", "pdf-to-word", "pdf-to-excel",
         "pdf-to-ppt", "word-to-pdf", "excel-to-pdf", "ppt-to-pdf"}
 PAGE = {"split", "extract", "delete", "rotate"}
-assert set(ids) == CORE | PAGE, ids
-assert len(ids) == 12, ids
+MEDIA = {"pdf-to-image", "image-to-pdf"}
+assert set(ids) == CORE | PAGE | MEDIA, ids
+assert len(ids) == 14, ids
 cfg = req("GET", "/api/v1/config")
 assert [t["id"] for t in cfg["tools"]] == ids, "config and /tools disagree"
 

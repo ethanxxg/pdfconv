@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__ — 在线免费转换</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:14px;margin-top:16px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px;
+        position:relative;transition:.12s}
+  .card:hover{border-color:#b9c2cc;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+  .thumb{width:100%;height:132px;display:flex;align-items:center;justify-content:center;
+        background:#fafbfc;border-radius:6px;overflow:hidden}
+  .thumb img{max-width:100%;max-height:100%;object-fit:contain}
+  .meta{padding:7px 2px 2px;font-size:12px;color:var(--muted)}
+  .nm{color:var(--text);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .idx{position:absolute;top:6px;left:6px;background:var(--brand);color:#fff;font-size:11px;
+       line-height:1;padding:4px 6px;border-radius:5px}
+  .rm{position:absolute;top:5px;right:5px;border:0;background:rgba(0,0,0,.55);color:#fff;
+       width:20px;height:20px;border-radius:50%;cursor:pointer;font-size:13px;line-height:1;padding:0}
+  .rm:hover{background:var(--danger)}
+
+  .out{display:flex;align-items:center;gap:12px;margin:6px 0 14px}
+  .out .ico{width:46px;height:56px;flex:0 0 auto;border-radius:6px;background:#fbe9e7;
+       color:#a3352a;display:flex;align-items:center;justify-content:center;
+       font-size:10.5px;font-weight:600;letter-spacing:.3px}
+  .out .nm{font-size:15px;font-weight:500;color:var(--text);word-break:break-all}
+  .out .meta{font-size:12.5px;color:var(--muted);margin-top:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav" id="nav"></nav>
+  <h1>__TITLE__</h1>
+  <p class="sub">__SUB__</p>
+
+  <div class="drop" id="drop">
+    <div><b>选择 JPG / PNG 图片</b> 或把图片拖到这里</div>
+    <small id="limits">最多 20 张，单个 100 MB</small>
+    <input type="file" id="picker" accept="__ACCEPT__" multiple hidden>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="bar">
+    <button class="primary" id="go" disabled>__ACTION__</button>
+    <span class="hint" id="hint"></span>
+  </div>
+
+  <div class="prog" id="prog"><i id="progbar"></i></div>
+  <div class="msg" id="msg"></div>
+
+  <div class="result" id="result">
+    <div class="ttl">转换完成<span id="rsum"></span></div>
+    <div class="out">
+      <div class="ico" id="rico">PDF</div>
+      <div>
+        <div class="nm" id="rname"></div>
+        <div class="meta" id="rmeta"></div>
+      </div>
+    </div>
+    <div class="row">
+      <a class="dl" id="rdl" href="#">__RESULT__</a>
+      <button class="ghost" id="again">再转一次</button>
+    </div>
+    <div class="cd">文件将在 <b id="cd">--:--</b> 后自动删除，请及时下载。</div>
+  </div>
+
+  <div class="foot">
+    文件仅用于本次转换，到期自动删除。<br>
+    本站无需登录；为防滥用，按设备与网络地址做频率限制。
+  </div>
+</div>
+
+<script src="/static/nav.js"></script>
+<script>
+const TOOL = __TOOL_JSON__;
+
+let CFG = { max_files: 20, max_file_mb: 100, max_task_mb: 200, ttl: 3600,
+            plan: { jobs_left: null, jobs_per_day: 0 } };
+
+const files = [];          // {file, id, url}
+let seq = 0, busy = false, tick = null;
+
+const $ = s => document.querySelector(s);
+const drop = $("#drop"), picker = $("#picker"), grid = $("#grid"),
+      go = $("#go"), msg = $("#msg"), hint = $("#hint"),
+      prog = $("#prog"), progbar = $("#progbar"), result = $("#result");
+
+document.title = TOOL.title + " — 在线免费转换";
+
+async function fingerprint() {
+  const c = document.createElement("canvas");
+  c.width = 220; c.height = 40;
+  const x = c.getContext("2d");
+  x.textBaseline = "top"; x.font = "15px Arial";
+  x.fillStyle = "#f60"; x.fillRect(0, 0, 110, 22);
+  x.fillStyle = "#069"; x.fillText("pdfmerge-fp-\u{1F5C4}", 2, 4);
+  const raw = [c.toDataURL(), navigator.userAgent,
+    screen.width + "x" + screen.height + "x" + (screen.colorDepth || 0),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    (navigator.languages || []).join(","),
+    navigator.hardwareConcurrency || 0].join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].slice(0, 16)
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+let DEVICE = "";
+
+(async () => {
+  DEVICE = await fingerprint();
+  try {
+    const r = await fetch("/api/v1/config",
+                          { headers: { "X-Device-Id": DEVICE } });
+    if (!r.ok) return;
+    const c = await r.json();
+    CFG = c;
+    $("#limits").textContent =
+      `最多 ${c.max_files} 张，单个 ${c.max_file_mb} MB，最多 ${c.max_pages} 页`;
+    sync();
+  } catch (e) {}
+})();
+
+/* ---------- intake ---------- */
+drop.addEventListener("click", () => { if (!busy) picker.click(); });
+drop.addEventListener("dragover", e => {
+  if (busy) return;
+  e.preventDefault(); drop.classList.add("hot");
+});
+drop.addEventListener("dragleave", () => drop.classList.remove("hot"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("hot");
+  if (!busy) add([...e.dataTransfer.files]);
+});
+picker.addEventListener("change", e => { add([...e.target.files]); picker.value = ""; });
+
+function isImage(f) {
+  return /\.(jpe?g|png)$/i.test(f.name) ||
+         f.type === "image/jpeg" || f.type === "image/png";
+}
+
+function add(list) {
+  clearMsg(); hideResult();
+  const imgs = list.filter(isImage);
+  const skipped = list.length - imgs.length;
+  for (const f of imgs) {
+    if (files.length >= CFG.max_files) { showMsg("err", `最多 ${CFG.max_files} 张图片`); break; }
+    if (f.size > CFG.max_file_mb * 1048576) {
+      showMsg("err", `「${f.name}」超过 ${CFG.max_file_mb} MB`); continue;
+    }
+    files.push({ file: f, id: "u" + (seq++), url: URL.createObjectURL(f) });
+  }
+  if (skipped > 0) showMsg("err", `已忽略 ${skipped} 个非 JPG/PNG 文件`);
+  render(); sync();
+}
+
+function render() {
+  grid.innerHTML = "";
+  files.forEach((it, i) => {
+    const d = document.createElement("div");
+    d.className = "card";
+    d.innerHTML = `
+      <span class="idx">${i + 1}</span>
+      <button class="rm" title="移除">×</button>
+      <div class="thumb"><img src="${it.url}" alt=""></div>
+      <div class="meta">
+        <div class="nm" title="${esc(it.file.name)}">${esc(it.file.name)}</div>
+        ${mb(it.file.size)}
+      </div>`;
+    d.querySelector(".rm").onclick = ev => {
+      ev.stopPropagation();
+      const at = files.findIndex(x => x.id === it.id);
+      if (at >= 0) { URL.revokeObjectURL(files[at].url); files.splice(at, 1); }
+      render(); sync(); hideResult();
+    };
+    grid.appendChild(d);
+  });
+}
+
+function sync() {
+  const total = files.reduce((s, f) => s + f.file.size, 0);
+  const maxPages = CFG.max_pages || 0;
+  const overPages = maxPages > 0 && files.length > maxPages;
+  const overSize = total > CFG.max_task_mb * 1048576;
+  const left = (CFG.plan || {}).jobs_left;
+  const noQuota = typeof left === "number" && left <= 0;
+
+  go.disabled = busy || files.length < 1 || overPages || overSize || noQuota;
+  hint.textContent = files.length
+    ? `${files.length} 张图片 · ${mb(total)}`
+      + (overPages ? ` · 超出 ${maxPages} 页上限` : "")
+      + (noQuota ? " · 今日额度已用完"
+                 : (typeof left === "number" ? ` · 今天还剩 ${left} 次` : ""))
+    : "";
+
+  if (overPages) showMsg("err", `共 ${files.length} 张图片，免费版最多 ${maxPages} 页`);
+  else if (overSize) showMsg("err", `合计超过 ${CFG.max_task_mb} MB`);
+  else if (noQuota) showMsg("err", "今天的免费额度已用完，明天再来，或升级 Pro");
+}
+
+/* ---------- convert ---------- */
+go.onclick = async () => {
+  if (busy || files.length < 1) return;
+  busy = true; setBusy(true); hideResult();
+  try {
+    showMsg("info", "正在上传…");
+    const res = await fetch("/api/v1/uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({
+        files: files.map(f => ({ name: f.file.name, size: f.file.size }))
+      })
+    });
+    if (!res.ok) throw await apiError(res);
+    const { uploads } = await res.json();
+
+    const totalBytes = files.reduce((s, f) => s + f.file.size, 0) || 1;
+    let sentBefore = 0;
+    showProgress(0);
+    for (let i = 0; i < files.length; i++) {
+      await putFile(uploads[i].url, files[i].file, sent => {
+        const pct = Math.min(99, Math.round((sentBefore + sent) / totalBytes * 100));
+        showProgress(pct);
+        showMsg("info", `正在上传… ${i + 1}/${files.length} · ${pct}%`);
+      });
+      sentBefore += files[i].file.size;
+      showProgress(Math.round(sentBefore / totalBytes * 100));
+    }
+
+    showMsg("info", "正在合成 PDF…");
+    const jr = await fetch("/api/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({
+        task: "media",
+        files: uploads.map(u => ({ file_id: u.file_id })),
+        options: { op: "img2pdf", name: files[0].file.name }
+      })
+    });
+    if (!jr.ok) throw await apiError(jr);
+    const job = await jr.json();
+    if (typeof job.jobs_left === "number" || job.jobs_left === null) {
+      CFG.plan = CFG.plan || {};
+      CFG.plan.jobs_left = job.jobs_left;
+    }
+    await poll(job.job_id);
+  } catch (e) {
+    showMsg("err", e.message || "出错了，请重试");
+    showProgress(0);
+  } finally {
+    busy = false; setBusy(false); sync();
+  }
+};
+
+function contentType(f) {
+  if (f.type === "image/png" || /\.png$/i.test(f.name)) return "image/png";
+  return "image/jpeg";
+}
+
+function putFile(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url, true);
+    x.setRequestHeader("Content-Type", contentType(blob));
+    x.setRequestHeader("X-Device-Id", DEVICE);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) return resolve();
+      let d = {};
+      try { d = (JSON.parse(x.responseText).detail) || {}; } catch (e) {}
+      reject(new Error(d.message || `上传失败 (${x.status})`));
+    };
+    x.onerror = () => reject(new Error("网络中断，请重试"));
+    x.send(blob);
+  });
+}
+
+async function poll(jobId) {
+  for (let i = 0; i < 900; i++) {
+    await new Promise(r => setTimeout(r, 400));
+    const r = await fetch("/api/v1/jobs/" + jobId);
+    if (!r.ok) throw await apiError(r);
+    const j = await r.json();
+    if (j.status === "done") {
+      showProgress(0);
+      clearMsg();
+      showResult(j);
+      return;
+    }
+    if (j.status === "failed") throw new Error((j.error && j.error.message) || "转换失败");
+    if (j.status === "queued") {
+      showMsg("info", "排队中…");
+    } else {
+      showProgress(100);
+      prog.classList.add("indet");
+      showMsg("info", "正在合成 PDF…");
+    }
+  }
+  throw new Error("等待超时，请重试");
+}
+
+/* ---------- result ---------- */
+function showResult(j) {
+  const r = j.result || {};
+  const base = (files[0] && files[0].file.name || "images").replace(/\.[^.]+$/, "");
+  $("#rico").textContent = "PDF";
+  $("#rname").textContent = base + ".pdf";
+  $("#rsum").textContent = ` · ${j.pages} 页`;
+  $("#rmeta").textContent = `${r.images || files.length} 张图片合成`;
+  $("#rdl").href = j.download;
+  result.classList.add("on");
+  startCountdown(typeof j.expires_in === "number" ? j.expires_in : CFG.ttl);
+  result.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function hideResult() {
+  result.classList.remove("on");
+  if (tick) { clearInterval(tick); tick = null; }
+}
+
+function startCountdown(sec) {
+  if (tick) clearInterval(tick);
+  const el = $("#cd");
+  let left = Math.max(0, sec);
+  const fmt = s => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  el.textContent = fmt(left);
+  tick = setInterval(() => {
+    left -= 1;
+    el.textContent = fmt(Math.max(0, left));
+    if (left <= 0) {
+      clearInterval(tick); tick = null;
+      el.textContent = "已过期";
+      result.classList.remove("on");
+      showMsg("err", "结果已过期删除，请重新转换。");
+    }
+  }, 1000);
+}
+
+$("#again").onclick = () => {
+  files.forEach(f => URL.revokeObjectURL(f.url));
+  files.length = 0;
+  render(); sync(); clearMsg(); hideResult(); showProgress(0);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
+
+/* ---------- misc ---------- */
+function setBusy(on) {
+  drop.classList.toggle("busy", on);
+  go.textContent = on ? "转换中…" : TOOL.action;
+}
+
+function showProgress(pct) {
+  if (!pct) {
+    prog.classList.remove("on", "indet");
+    progbar.style.width = "0%";
+    return;
+  }
+  prog.classList.add("on");
+  progbar.style.width = pct + "%";
+}
+
+async function apiError(res) {
+  let d = {};
+  try { d = (await res.json()).detail || {}; } catch (e) {}
+  if (res.status === 429) return new Error(d.message || "请求过于频繁，请稍后再试");
+  if (res.status === 503) return new Error(d.message || "服务繁忙，请稍后重试");
+  return new Error(d.message || `请求失败 (${res.status})`);
+}
+function showMsg(kind, text) { msg.className = "msg " + kind; msg.textContent = text; }
+function clearMsg() { msg.className = "msg"; msg.textContent = ""; }
+function mb(n) { return n > 1048576 ? (n / 1048576).toFixed(2) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+function esc(s) { return s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+</script>
+</body>
+</html>

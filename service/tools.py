@@ -76,6 +76,24 @@ TOOLS = {
         "icon": "rotate", "op": "rotate", "action": "旋转页面",
         "result": "下载 PDF", "accept": [".pdf"], "mime": "application/pdf",
     },
+    "pdf-to-image": {
+        "id": "pdf-to-image", "label": "PDF 转图片",
+        "path": "/media/pdf-to-image",
+        "title": "PDF 转图片", "src": "pdf", "dst": "zip",
+        "sub": "每页导出成一张 PNG 或 JPG 图片，打包成 zip 下载。",
+        "icon": "image", "op": "pdf2img", "action": "转换为图片",
+        "result": "下载图片压缩包", "accept": [".pdf"],
+        "mime": "application/pdf",
+    },
+    "image-to-pdf": {
+        "id": "image-to-pdf", "label": "图片转 PDF",
+        "path": "/media/image-to-pdf",
+        "title": "图片转 PDF", "src": "image", "dst": "pdf",
+        "sub": "把多张 JPG / PNG 图片按顺序合成一个 PDF。",
+        "icon": "image", "op": "img2pdf", "action": "转换为 PDF",
+        "result": "下载 PDF", "accept": [".jpg", ".jpeg", ".png"],
+        "mime": "image/jpeg",
+    },
     "pdf-to-word": {
         "id": "pdf-to-word", "label": "PDF 转 Word",
         "path": "/convert/pdf-to-word",
@@ -132,7 +150,8 @@ TOOLS = {
 ORDER = ["pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
          "word-to-pdf", "excel-to-pdf", "ppt-to-pdf",
          "merge", "compress",
-         "split", "extract", "delete", "rotate"]
+         "split", "extract", "delete", "rotate",
+         "pdf-to-image", "image-to-pdf"]
 
 # Conversions that go through the generic /convert page (everything else has a
 # bespoke page because the interaction is genuinely different).

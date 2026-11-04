@@ -16,6 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 from .compress import compress_task, CompressError
 from .convert import convert_task, ConvertError
 from .merge import merge_task, MergeError
+from .media import (pdf_to_images_task, images_to_pdf_task, MediaError)
 from .pages import pages_task, PagesError
 
 
@@ -51,6 +52,9 @@ class Job:
             # Split packs its many outputs into one zip; the other three page
             # ops produce a single PDF.
             ext = ".zip" if (opts or {}).get("op") == "split" else ".pdf"
+        elif kind == "media":
+            # PDF -> image returns a zip of PNG/JPG; image -> PDF returns a PDF.
+            ext = ".zip" if (opts or {}).get("op") == "pdf2img" else ".pdf"
         self.out_key = "out/%s%s" % (jid, ext)
         self.file_keys = file_keys
         self.rotations = rotations or [0] * len(file_keys)
@@ -149,6 +153,16 @@ class Runner:
                         opts.get("max_pages"), opts.get("pages"),
                         opts.get("angle"), opts.get("ranges"),
                         opts.get("every"))
+                elif job.kind == "media":
+                    if opts.get("op") == "pdf2img":
+                        fut = self.pool.submit(
+                            pdf_to_images_task, paths[0], out_path,
+                            opts.get("fmt"), opts.get("dpi"),
+                            opts.get("max_pages"))
+                    else:
+                        fut = self.pool.submit(
+                            images_to_pdf_task, paths, out_path,
+                            opts.get("max_pages"))
                 else:
                     fut = self.pool.submit(merge_task, paths, out_path,
                                            job.rotations,
@@ -175,7 +189,8 @@ class Runner:
             else:
                 job.pages = int(res or 0)
             job.status = "done"
-        except (MergeError, CompressError, ConvertError, PagesError) as e:
+        except (MergeError, CompressError, ConvertError, PagesError,
+                MediaError) as e:
             job.status = "failed"
             job.error = {"code": e.code, "message": e.message}
         except Exception:

@@ -65,10 +65,10 @@ with sync_playwright() as pw:
     pg.wait_for_selector(".card")
     cards = pg.eval_on_selector_all(".card .t", "els => els.map(e => e.textContent.trim())")
     print("grid (%d):" % len(cards), cards)
-    assert len(cards) == 12, cards
+    assert len(cards) == 14, cards
     nav = pg.eval_on_selector_all(".nav a", "els => els.map(e => e.textContent.trim())")
     print("nav  (%d):" % len(nav), nav)
-    assert len(nav) == 13 and nav[-1] == "全部工具", nav
+    assert len(nav) == 15 and nav[-1] == "全部工具", nav
     pg.screenshot(path="work/_bench/conv_tools.png", full_page=True)
 
     # ------------------------------------------------- PDF -> Word (generic page)
