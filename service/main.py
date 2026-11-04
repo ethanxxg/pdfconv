@@ -15,6 +15,7 @@ Run:  python -m uvicorn service.main:app --host 0.0.0.0 --port 8090
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 import zipfile
@@ -28,6 +29,8 @@ from fastapi.staticfiles import StaticFiles
 
 import pymupdf as fitz
 
+from .edit import (ANGLES, ANNOT_KINDS, OPS as EDIT_OPS, POSITIONS,
+                   form_fields)
 from .jobs import Runner, JobStore
 from .limits import Limiter
 from .plans import PLANS, Quota, describe, plan_of, resolve_plan
@@ -245,7 +248,166 @@ def _safe_stem(name):
     base = os.path.splitext(base)[0]
     base = "".join(ch for ch in base
                    if ch.isprintable() and ch not in '"/\\:*?<>|').strip(" .")
-    return (base or "converted")[:80]
+    # An absent name must stay absent: the download route picks a per-task
+    # default (edited / archive / pages / compressed / converted) via
+    # ``stem or default``.  Returning "converted" here used to shadow every
+    # one of those defaults whenever the caller omitted ``options.name``.
+    return base[:80]
+
+
+# -- edit option validation ------------------------------------------------
+# Everything below is re-validated in service/edit.py, but doing it here too is
+# what lets a malformed request fail with 400 *before* the daily allowance is
+# consumed.  The shape is deliberately a closed whitelist: no unknown keys from
+# the browser ever reach the worker.
+_EDIT_HEX = re.compile(r"^#?[0-9a-fA-F]{6}$")
+
+
+def _bad(code, message):
+    raise HTTPException(400, detail={"code": code, "message": message})
+
+
+def _estr(value, code, label, limit, default=""):
+    s = str(value if value is not None else default).strip()
+    if len(s) > limit:
+        _bad(code, "%s最多 %d 个字符" % (label, limit))
+    return s
+
+
+def _enum(value, lo, hi, default, code, label):
+    try:
+        v = float(value if value not in (None, "") else default)
+    except (TypeError, ValueError):
+        _bad(code, "%s必须是数字" % label)
+    if not lo <= v <= hi:
+        _bad(code, "%s只能在 %s–%s 之间" % (label, lo, hi))
+    return v
+
+
+def _ecolor(value, default="#ff0000"):
+    s = str(value or default).strip()
+    if not _EDIT_HEX.match(s):
+        _bad("bad_color", "颜色格式不正确，应为 #RRGGBB")
+    return s if s.startswith("#") else "#" + s
+
+
+def _epos(value, default="center"):
+    pos = str(value or default).strip().lower()
+    if pos not in POSITIONS:
+        _bad("bad_position", "位置无效")
+    return pos
+
+
+def _ekeywords(o):
+    raw = o.get("keywords") or []
+    if isinstance(raw, str):
+        raw = raw.replace("，", "\n").splitlines()
+    if not isinstance(raw, list):
+        _bad("bad_keywords", "关键词格式不正确")
+    out = [str(x).strip()[:200] for x in raw if str(x).strip()]
+    if len(out) > 50:
+        _bad("bad_keywords", "一次最多 50 个关键词")
+    return out
+
+
+def _erects(o):
+    raw = o.get("rects") or []
+    if not isinstance(raw, list) or len(raw) > 200:
+        _bad("bad_rect", "框选区域最多 200 个")
+    out = []
+    for b in raw:
+        if not isinstance(b, dict):
+            _bad("bad_rect", "框选区域格式不正确")
+        try:
+            d = {k: float(b.get(k)) for k in ("x", "y", "w", "h")}
+            d["page"] = int(b.get("page") or 0)
+        except (TypeError, ValueError):
+            _bad("bad_rect", "框选区域格式不正确")
+        if not all(0 <= d[k] <= 1 for k in ("x", "y", "w", "h")) \
+                or d["w"] <= 0 or d["h"] <= 0:
+            _bad("bad_rect", "框选区域超出页面范围")
+        out.append(d)
+    return out
+
+
+def _edit_options(op, o):
+    """Validate and normalise the per-op option dict for an edit job."""
+    e = {"op": op,
+         "pages": _estr(o.get("pages"), "bad_pages", "页码", 200)}
+    if op == "watermark":
+        e["text"] = _estr(o.get("text"), "bad_text", "水印文字", 120)
+        if not e["text"]:
+            _bad("bad_text", "请填写水印文字")
+        e["position"] = _epos(o.get("position"))
+        e["size"] = _enum(o.get("size"), 6, 96, 36, "bad_size", "字号")
+        e["opacity"] = _enum(o.get("opacity"), 0.05, 1, 0.3,
+                             "bad_opacity", "透明度")
+        try:
+            angle = int(o.get("angle") or 0)
+        except (TypeError, ValueError):
+            angle = -1
+        if angle not in ANGLES:
+            _bad("bad_angle", "水印角度只能是 0 / 30 / 45 / 60 / 90")
+        e["angle"] = angle
+        e["color"] = _ecolor(o.get("color"))
+        e["tile"] = bool(o.get("tile"))
+    elif op == "redact":
+        e["keywords"] = _ekeywords(o)
+        e["rects"] = _erects(o)
+        if not e["keywords"] and not e["rects"]:
+            _bad("bad_keywords", "请填写要抹掉的文字或框选区域")
+        e["color"] = _ecolor(o.get("color"), "#000000")
+    elif op == "annotate":
+        kind = str(o.get("kind") or "highlight").strip().lower()
+        if kind not in ANNOT_KINDS:
+            _bad("bad_kind", "未知的批注类型")
+        e["kind"] = kind
+        e["keywords"] = _ekeywords(o)
+        e["rects"] = _erects(o)
+        e["note"] = _estr(o.get("note"), "bad_note", "批注内容", 500)
+        e["author"] = _estr(o.get("author"), "bad_note", "批注人", 60) or "pdfkit"
+        e["color"] = _ecolor(o.get("color"), "#ffd900")
+        if kind in ("note", "freetext") and not e["note"]:
+            _bad("bad_note", "请填写批注内容")
+        if kind not in ("note", "freetext") and not e["keywords"] and not e["rects"]:
+            _bad("bad_keywords", "请填写要标注的文字或框选区域")
+    elif op == "stamp":
+        e["position"] = _epos(o.get("position"), "br")
+        e["scale"] = _enum(o.get("scale"), 0.05, 0.6, 0.18,
+                           "bad_scale", "印章大小")
+        e["opacity"] = _enum(o.get("opacity"), 0.1, 1, 1,
+                             "bad_opacity", "透明度")
+        try:
+            rotation = int(o.get("rotation") or 0)
+        except (TypeError, ValueError):
+            rotation = -1
+        if rotation not in (0, 90, 180, 270):
+            _bad("bad_angle", "印章角度只能是 0 / 90 / 180 / 270")
+        e["rotation"] = rotation
+    elif op == "form":
+        fields = o.get("fields") or {}
+        if not isinstance(fields, dict) or not fields or len(fields) > 200:
+            _bad("bad_fields", "请填写 1–200 个表单字段")
+        e["fields"] = {str(k)[:120]:
+                       (v if isinstance(v, bool) else str(v)[:2000])
+                       for k, v in fields.items()}
+        e["flatten"] = bool(o.get("flatten", True))
+    else:  # rewrite
+        raw = o.get("pairs") or []
+        if not isinstance(raw, list) or len(raw) > 20:
+            _bad("bad_pairs", "一次最多 20 条替换规则")
+        pairs = []
+        for it in raw:
+            if not isinstance(it, dict):
+                continue
+            find = _estr(it.get("find"), "bad_pairs", "查找文字", 200)
+            repl = _estr(it.get("replace"), "bad_pairs", "替换文字", 200)
+            if find:
+                pairs.append({"find": find, "replace": repl})
+        if not pairs:
+            _bad("bad_pairs", "请填写要查找和替换的文字")
+        e["pairs"] = pairs
+    return e
 
 
 def _read_progress(job):
@@ -330,6 +492,41 @@ async def config(request: Request):
 async def tools_index():
     """The tool grid and the shared nav both build themselves from this."""
     return {"tools": tool_registry.describe_all()}
+
+
+@app.post("/api/v1/edit/fields")
+async def edit_form_fields(request: Request):
+    """List AcroForm fields so the form-filling page can build its inputs.
+
+    Read-only and xref-only, so it costs about as much as a page count.  Gated
+    by the same plan switch as the edit jobs themselves: otherwise a free user
+    could enumerate a form's field names even though filling them is blocked.
+    """
+    guard(request, (IP_JOB[0], IP_JOB[1]))
+    if not plan_of(resolve_plan(request))["edit"]:
+        raise HTTPException(403, detail={
+            "code": "plan_limit",
+            "message": "PDF 编辑是 Pro 功能，升级后可填写表单"})
+    body = await request.json()
+    fid = str(body.get("file_id") or "").strip()
+    if not fid or len(fid) > 128:
+        raise HTTPException(400, detail={"code": "bad_file_id",
+                                         "message": "文件无效"})
+    key = "in/" + fid
+    path = storage.path(key)
+    if storage.size(key) <= 0:
+        raise HTTPException(400, detail={"code": "missing_file",
+                                         "message": "文件已过期，请重新上传"})
+    kind = await asyncio.to_thread(_detect_kind, path)
+    if kind != "pdf":
+        raise HTTPException(400, detail={"code": "wrong_type",
+                                         "message": "编辑工具只支持 PDF 文件"})
+    try:
+        fields = await asyncio.to_thread(form_fields, path)
+    except Exception:
+        raise HTTPException(400, detail={"code": "bad_pdf",
+                                         "message": "无法读取表单，请检查文件"})
+    return {"fields": fields, "count": len(fields)}
 
 
 @app.get("/api/v1/plans")
@@ -449,9 +646,18 @@ async def create_job(request: Request):
 
     body = await request.json()
     task = str(body.get("task") or "merge").strip().lower()
-    if task not in ("merge", "compress", "convert", "pages", "media", "pdfa"):
+    if task not in ("merge", "compress", "convert", "pages", "media", "pdfa",
+                    "edit"):
         raise HTTPException(400, detail={"code": "bad_task",
                                          "message": "不支持的任务类型"})
+
+    # Editing is the paid hook.  Check before any file work: returning 403
+    # here must not consume an upload or the caller's daily allowance.
+    if task == "edit" and not plan["edit"]:
+        raise HTTPException(403, detail={
+            "code": "plan_limit",
+            "message": "PDF 编辑是 Pro 功能：升级后可用加水印、涂黑脱敏、批注、"
+                       "盖章、表单填写与文字原地改写"})
 
     # Two accepted shapes: the current one carries a per-file rotation, the
     # flat one is what the first cut of the page sent.  Keeping both means an
@@ -492,6 +698,18 @@ async def create_job(request: Request):
             raise HTTPException(400, detail={
                 "code": "one_file",
                 "message": "一次只能归档 1 个 PDF"})
+    elif task == "edit":
+        eop = str((body.get("options") or {}).get("op") or "").strip().lower()
+        if eop not in EDIT_OPS:
+            raise HTTPException(400, detail={"code": "bad_op",
+                                             "message": "未知的编辑操作"})
+        # Stamp is the one edit that takes a second upload (the seal image).
+        want = 2 if eop == "stamp" else 1
+        if len(raw) != want:
+            raise HTTPException(400, detail={
+                "code": "wrong_file_count",
+                "message": ("盖章需要 1 个 PDF 和 1 张 JPG/PNG 图片"
+                            if want == 2 else "编辑一次只能处理 1 个 PDF")})
     elif task == "media":
         mop = str((body.get("options") or {}).get("op") or "").strip().lower()
         if mop == "pdf2img":
@@ -655,6 +873,15 @@ async def create_job(request: Request):
         opts["part"] = part
         # Only names the download; never used to build a path.
         opts["name"] = _safe_stem(o.get("name"))
+    elif task == "edit":
+        o = body.get("options") or {}
+        op = str(o.get("op") or "").strip().lower()
+        if op not in EDIT_OPS:
+            raise HTTPException(400, detail={"code": "bad_op",
+                                             "message": "未知的编辑操作"})
+        opts["op"] = op
+        opts["options"] = _edit_options(op, o)
+        opts["name"] = _safe_stem(o.get("name"))
 
     keys = ["in/" + f for f in fids]
     total = 0
@@ -692,15 +919,23 @@ async def create_job(request: Request):
         opts["out_ext"] = {"pdf": ".pdf", "jpg": ".jpg", "png": ".png"}[ckind]
         opts["name"] = _safe_stem((body.get("options") or {}).get("name"))
 
-    if task in ("pages", "pdfa"):
-        # Both are PDF-only.  Refuse a .docx here with a clean message instead
-        # of letting it reach the worker and fail on fitz.open.
+    if task in ("pages", "pdfa", "edit"):
+        # All three are PDF-only.  Refuse a .docx here with a clean message
+        # instead of letting it reach the worker and fail on fitz.open.
         pkind = await asyncio.to_thread(_detect_kind, storage.path(keys[0]))
         if pkind != "pdf":
+            label = {"pages": "页面工具", "pdfa": "PDF/A 归档",
+                     "edit": "编辑工具"}[task]
             raise HTTPException(400, detail={
                 "code": "wrong_type",
-                "message": ("页面工具只支持 PDF 文件" if task == "pages"
-                            else "PDF/A 归档只支持 PDF 文件")})
+                "message": "%s只支持 PDF 文件" % label})
+        if task == "edit" and opts["op"] == "stamp":
+            ikind = await asyncio.to_thread(_detect_compress_kind,
+                                            storage.path(keys[1]))
+            if ikind not in ("jpg", "png"):
+                raise HTTPException(400, detail={
+                    "code": "wrong_type",
+                    "message": "印章图片只支持 JPG 或 PNG"})
 
     if task == "media":
         if opts["op"] == "pdf2img":
@@ -724,11 +959,14 @@ async def create_job(request: Request):
     # are PDF; Office -> PDF is checked in the worker (its page count is unknown
     # before rendering); image inputs have no pages at all, so the free-tier
     # page cap must not fire on them.
-    src_is_pdf = (task in ("merge", "pages", "pdfa")
+    src_is_pdf = (task in ("merge", "pages", "pdfa", "edit")
                   or (tool is not None and tool["src"] == "pdf")
                   or (task == "compress" and opts.get("src_kind") == "pdf"))
     if src_is_pdf:
-        pages = await asyncio.to_thread(_count_pages, keys)
+        # A stamp job's second upload is an image, not a PDF: it has no pages
+        # and must not be handed to _count_pages.
+        page_keys = keys[:1] if task == "edit" else keys
+        pages = await asyncio.to_thread(_count_pages, page_keys)
         if pages > plan["max_pages"]:
             raise HTTPException(400, detail={
                 "code": "too_many_pages",
@@ -829,7 +1067,7 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
     job = store.get(os.path.splitext(os.path.basename(key))[0])
     stem = ((job.opts or {}).get("name") if job else None)
     if job is not None and job.kind in ("convert", "compress", "pages",
-                                        "media", "pdfa"):
+                                        "media", "pdfa", "edit"):
         op = (job.opts or {}).get("op")
         zipped = ((job.kind == "pages" and op == "split")
                   or (job.kind == "media" and op == "pdf2img"))
@@ -838,7 +1076,7 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
         else:
             default = {"convert": "converted", "compress": "compressed",
                        "pages": "pages", "media": "images",
-                       "pdfa": "archive"}[job.kind]
+                       "pdfa": "archive", "edit": "edited"}[job.kind]
             name = (stem or default) + ext
     elif key.startswith("out/"):
         name = "merged.pdf"
@@ -920,7 +1158,8 @@ async def pages_page(tool_id: str):
     reveals; the server still re-validates everything in create_job.
     """
     tool = tool_registry.get(tool_id)
-    if tool is None or tool.get("op") is None:
+    if tool is None or tool.get("op") not in ("split", "extract",
+                                              "delete", "rotate"):
         raise HTTPException(404, detail={"code": "no_such_tool",
                                          "message": "没有这个工具"})
     op = tool["op"]
@@ -1022,6 +1261,47 @@ async def pdfa_page():
         "result": tool.get("result") or "下载 PDF/A",
     }
     page = os.path.join(os.path.dirname(__file__), "static", "pdfa.html")
+    with open(page, encoding="utf-8") as f:
+        html = f.read()
+    subs = {
+        "__TOOL_JSON__": json.dumps(payload, ensure_ascii=False),
+        "__TITLE__": tool["title"],
+        "__SUB__": tool["sub"],
+        "__ACTION__": payload["action"],
+        "__RESULT__": payload["result"],
+        "__ACCEPT__": ",".join(payload["accept"]),
+    }
+    for k, v in subs.items():
+        html = html.replace(k, v)
+    return HTMLResponse(html)
+
+
+@app.get("/edit/{tool_id}")
+async def edit_page(tool_id: str):
+    """One template, six structured-edit operations.
+
+    The op decides which controls the page reveals; the server re-validates
+    everything in create_job.  Positions, angles and annotation kinds are
+    injected from the same constants the worker uses, so the browser can never
+    offer a value the backend would refuse.
+    """
+    tool = tool_registry.get(tool_id)
+    if tool is None or tool_id not in tool_registry.EDIT_TOOLS:
+        raise HTTPException(404, detail={"code": "no_such_tool",
+                                         "message": "没有这个工具"})
+    payload = {
+        "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
+        "op": tool["op"], "src": tool["src"], "dst": tool["dst"],
+        "accept": tool.get("accept") or [".pdf"],
+        "mime": tool.get("mime") or "application/pdf",
+        "action": tool.get("action") or "开始编辑",
+        "result": tool.get("result") or "下载 PDF",
+        "pro": bool(tool.get("pro")),
+        "positions": list(POSITIONS),
+        "angles": list(ANGLES),
+        "annotKinds": list(ANNOT_KINDS),
+    }
+    page = os.path.join(os.path.dirname(__file__), "static", "edit.html")
     with open(page, encoding="utf-8") as f:
         html = f.read()
     subs = {

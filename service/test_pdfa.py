@@ -236,12 +236,13 @@ d = _docx.Document()
 d.add_paragraph("not a pdf")
 d.save(docx_src)
 
-print("1. config lists the archive tool last")
+print("1. config lists the archive tool before the Pro edit group")
 cfg = req("GET", "/api/v1/config")
 ids = [t["id"] for t in cfg["tools"]]
 assert "pdfa" in ids, ids
-assert ids[-1] == "pdfa", ids
-print("   tools tail:", ids[-3:])
+# P5 appended six edit tools; PDF/A is still the last *free* tool.
+assert ids[ids.index("pdfa") + 1] == "watermark", ids[-8:]
+print("   tools tail:", ids[-8:])
 
 print("2. PDF -> PDF/A-2b: output intent, XMP, fonts")
 fid = upload(emb_src)

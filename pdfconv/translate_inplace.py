@@ -197,15 +197,15 @@ def _flush(page, items):
             pass
 
 
-def translate_pdf_inplace(pdf_path, out_pdf, translator, src="en", tgt="zh",
-                          glossary=None, stats=None, floor=FLOOR,
-                          pages=None):
-    """Translate *pdf_path* without moving anything.  Returns ``(stats, n)``."""
-    from .translate import Stats, translate_text
+def _rewrite_doc(doc, out_pdf, transform, want, floor, st=None):
+    """Shared in-place loop: refill each text box with ``transform(text)``.
 
-    doc = fitz.open(pdf_path)
-    st = stats if stats is not None else Stats()
-    want = range(len(doc)) if pages is None else pages
+    ``transform`` returns the replacement, or a falsy / equal value to leave a
+    box alone.  Translation and literal find/replace are just two transforms;
+    keeping the redact + measure + redraw machinery here is what guarantees the
+    page canvas, page count, figures and stamps never move.
+    """
+    report = {"boxes": 0, "rewritten": 0, "shrunk": 0, "overflow": 0}
     for pno in want:
         if pno >= len(doc):
             break
@@ -238,9 +238,10 @@ def translate_pdf_inplace(pdf_path, out_pdf, translator, src="en", tgt="zh",
             if info is None:
                 continue
             text, size, color, key, base0, align = info
-            st.boxes += 1
-            new = translate_text(text, translator, src, tgt, glossary,
-                                 stats=st)
+            report["boxes"] += 1
+            if st is not None:
+                st.boxes += 1
+            new = transform(text)
             if not new or new == text:
                 continue                          # nothing changed: no redaction
             if measure.has_cjk(new):
@@ -250,11 +251,16 @@ def translate_pdf_inplace(pdf_path, out_pdf, translator, src="en", tgt="zh",
             r = fitz.Rect(b["bbox"])
             got = _fit(new, key, size, r, gap_below(r), floor)
             if got is None:
-                st.overflow += 1
+                report["overflow"] += 1
+                if st is not None:
+                    st.overflow += 1
                 continue
             sc, s, lines, lead = got
             if sc < 1.0:
-                st.shrunk += 1
+                report["shrunk"] += 1
+                if st is not None:
+                    st.shrunk += 1
+            report["rewritten"] += 1
             plans.append((r, lines, s, lead, color, key, base0, align))
 
         if not plans:
@@ -273,7 +279,7 @@ def translate_pdf_inplace(pdf_path, out_pdf, translator, src="en", tgt="zh",
                                   graphics=fitz.PDF_REDACT_LINE_ART_NONE)
         except Exception:
             pass
-        # 2) draw the translation inside the same boxes
+        # 2) draw the replacement inside the same boxes
         items = []
         for r, lines, s, lead, color, key, base0, align in plans:
             asc = 0.80
@@ -295,4 +301,44 @@ def translate_pdf_inplace(pdf_path, out_pdf, translator, src="en", tgt="zh",
         _flush(page, items)
     doc.save(out_pdf, garbage=3, deflate=True)
     doc.close()
+    return report
+
+
+def translate_pdf_inplace(pdf_path, out_pdf, translator, src="en", tgt="zh",
+                          glossary=None, stats=None, floor=FLOOR,
+                          pages=None):
+    """Translate *pdf_path* without moving anything.  Returns ``(stats, n)``."""
+    from .translate import Stats, translate_text
+
+    doc = fitz.open(pdf_path)
+    st = stats if stats is not None else Stats()
+    want = range(len(doc)) if pages is None else pages
+
+    def transform(text):
+        return translate_text(text, translator, src, tgt, glossary, stats=st)
+
+    _rewrite_doc(doc, out_pdf, transform, want, floor, st)
     return st, len(want)
+
+
+def rewrite_pdf_inplace(pdf_path, out_pdf, pairs, floor=FLOOR, pages=None):
+    """Literal find/replace inside the existing text boxes.
+
+    ``pairs`` is a list of ``(find, replace)``; all are applied to each block in
+    order.  Returns ``(report, n_pages)`` where report counts boxes,
+    rewritten boxes, shrunk boxes and boxes kept because the new text would not
+    fit.  Deliberately no regex: this is a document edit, not a search tool, and
+    an accidental catastrophic backtracking inside a worker process would take
+    the whole pool down.
+    """
+    doc = fitz.open(pdf_path)
+    want = range(len(doc)) if pages is None else pages
+
+    def transform(text):
+        new = text
+        for find, repl in pairs:
+            new = new.replace(find, repl)
+        return new
+
+    report = _rewrite_doc(doc, out_pdf, transform, want, floor)
+    return report, len(want)

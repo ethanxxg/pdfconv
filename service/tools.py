@@ -101,6 +101,60 @@ TOOLS = {
         "icon": "pdfa", "action": "转换为 PDF/A", "result": "下载 PDF/A",
         "accept": [".pdf"], "mime": "application/pdf",
     },
+    "watermark": {
+        "id": "watermark", "label": "加水印 / 页码",
+        "path": "/edit/watermark",
+        "title": "加水印 / 页码", "src": "pdf", "dst": "pdf",
+        "sub": "加文字水印、平铺水印或页眉页脚页码，支持中文、透明度与斜角。",
+        "icon": "edit", "op": "watermark", "action": "开始添加",
+        "result": "下载 PDF", "accept": [".pdf"],
+        "mime": "application/pdf", "pro": True,
+    },
+    "redact": {
+        "id": "redact", "label": "涂黑脱敏",
+        "path": "/edit/redact",
+        "title": "涂黑脱敏", "src": "pdf", "dst": "pdf",
+        "sub": "按关键词或框选区域抹掉敏感信息，真正删除底层文字而非盖黑框。",
+        "icon": "edit", "op": "redact", "action": "开始脱敏",
+        "result": "下载 PDF", "accept": [".pdf"],
+        "mime": "application/pdf", "pro": True,
+    },
+    "annotate": {
+        "id": "annotate", "label": "批注标注",
+        "path": "/edit/annotate",
+        "title": "批注标注", "src": "pdf", "dst": "pdf",
+        "sub": "高亮、下划线、删除线、便签与自由文本批注，可附着到指定词组。",
+        "icon": "edit", "op": "annotate", "action": "添加批注",
+        "result": "下载 PDF", "accept": [".pdf"],
+        "mime": "application/pdf", "pro": True,
+    },
+    "stamp": {
+        "id": "stamp", "label": "盖章 / 图片",
+        "path": "/edit/stamp",
+        "title": "盖章 / 叠加图片", "src": "pdf", "dst": "pdf",
+        "sub": "把印章或签名图片盖到指定位置，支持透明度与九宫格定位。",
+        "icon": "edit", "op": "stamp", "action": "开始盖章",
+        "result": "下载 PDF", "accept": [".pdf", ".jpg", ".jpeg", ".png"],
+        "mime": "application/pdf", "pro": True,
+    },
+    "form": {
+        "id": "form", "label": "表单填写",
+        "path": "/edit/form",
+        "title": "填写 PDF 表单", "src": "pdf", "dst": "pdf",
+        "sub": "读出 AcroForm 字段并填写，可扁平化成不可再改的普通页面。",
+        "icon": "edit", "op": "form", "action": "填写并导出",
+        "result": "下载 PDF", "accept": [".pdf"],
+        "mime": "application/pdf", "pro": True,
+    },
+    "rewrite": {
+        "id": "rewrite", "label": "文字原地改写",
+        "path": "/edit/rewrite",
+        "title": "文字原地改写", "src": "pdf", "dst": "pdf",
+        "sub": "在原文本框内查找替换，页码、印章和版式一律不动。",
+        "icon": "edit", "op": "rewrite", "action": "开始改写",
+        "result": "下载 PDF", "accept": [".pdf"],
+        "mime": "application/pdf", "pro": True,
+    },
     "pdf-to-word": {
         "id": "pdf-to-word", "label": "PDF 转 Word",
         "path": "/convert/pdf-to-word",
@@ -158,7 +212,12 @@ ORDER = ["pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
          "word-to-pdf", "excel-to-pdf", "ppt-to-pdf",
          "merge", "compress",
          "split", "extract", "delete", "rotate",
-         "pdf-to-image", "image-to-pdf", "pdfa"]
+         "pdf-to-image", "image-to-pdf", "pdfa",
+         "watermark", "redact", "annotate", "stamp", "form", "rewrite"]
+
+# The six structured-edit operations share one /edit template.  Keeping the
+# ids here means create_job, the route and the nav all agree on the whitelist.
+EDIT_TOOLS = [t for t in ORDER if TOOLS[t]["path"].startswith("/edit/")]
 
 # Conversions that go through the generic /convert page (everything else has a
 # bespoke page because the interaction is genuinely different).  Key off the
@@ -183,6 +242,7 @@ def describe_all():
             "id": t["id"], "label": t["label"], "path": t["path"],
             "title": t["title"], "sub": t["sub"], "icon": t["icon"],
             "src": t["src"], "dst": t["dst"],
+            "pro": bool(t.get("pro")),
             "accept": t.get("accept") or [".pdf"],
         })
     return out

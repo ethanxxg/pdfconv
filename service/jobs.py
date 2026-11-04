@@ -15,6 +15,7 @@ from concurrent.futures import ProcessPoolExecutor
 
 from .compress import compress_task, CompressError
 from .convert import convert_task, ConvertError
+from .edit import edit_task, EditError
 from .merge import merge_task, MergeError
 from .media import (pdf_to_images_task, images_to_pdf_task, MediaError)
 from .pages import pages_task, PagesError
@@ -168,6 +169,13 @@ class Runner:
                     fut = self.pool.submit(pdfa_task, paths[0], out_path,
                                            opts.get("part"),
                                            opts.get("max_pages"))
+                elif job.kind == "edit":
+                    # The whole path list travels: stamp needs a second upload
+                    # (the seal image), the other five ops ignore paths[1:].
+                    fut = self.pool.submit(edit_task, paths, out_path,
+                                           opts.get("op"),
+                                           opts.get("options"),
+                                           opts.get("max_pages"))
                 else:
                     fut = self.pool.submit(merge_task, paths, out_path,
                                            job.rotations,
@@ -195,7 +203,7 @@ class Runner:
                 job.pages = int(res or 0)
             job.status = "done"
         except (MergeError, CompressError, ConvertError, PagesError,
-                MediaError, PdfaError) as e:
+                MediaError, PdfaError, EditError) as e:
             job.status = "failed"
             job.error = {"code": e.code, "message": e.message}
         except SystemExit as e:

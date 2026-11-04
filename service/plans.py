@@ -34,6 +34,11 @@ PLANS = {
         # PDFM_FREE_OCR=0 restores it as the paid hook when billing lands.
         "ocr": True,
         "levels": ["recommended", "less", "extreme"],
+        # Editing is the paid hook: unlike OCR (which nobody could use before
+        # accounts existed), it is explicitly gated off on the free tier.
+        # PDFM_FREE_EDIT=1 opens it for local/dev deployments and the test
+        # harness; the day billing lands this flag goes away.
+        "edit": False,
     },
     "pro": {
         "id": "pro",
@@ -46,6 +51,7 @@ PLANS = {
         "batch_compress": True,
         "ocr": True,
         "levels": ["recommended", "less", "extreme"],
+        "edit": True,
     },
 }
 DEFAULT_PLAN = "free"
@@ -65,10 +71,13 @@ for _env, _key, _cast in (
         except ValueError:
             pass
 
-# OCR is a boolean, so it needs its own parse (the loop above only casts ints).
-_v = os.environ.get("PDFM_FREE_OCR")
-if _v is not None:
-    PLANS["free"]["ocr"] = _v.strip().lower() in ("1", "true", "yes", "on")
+# The two feature switches are booleans, so they need their own parse (the loop
+# above only casts ints).  Applied at import so no route has to remember which
+# of the two sources is authoritative.
+for _env, _key in (("PDFM_FREE_OCR", "ocr"), ("PDFM_FREE_EDIT", "edit")):
+    _v = os.environ.get(_env)
+    if _v is not None:
+        PLANS["free"][_key] = _v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def resolve_plan(request):
@@ -101,6 +110,7 @@ def describe(name, used=0):
         "jobs_left": left,
         "batch_compress": p["batch_compress"],
         "ocr": p["ocr"],
+        "edit": p["edit"],
         "levels": p["levels"],
     }
 

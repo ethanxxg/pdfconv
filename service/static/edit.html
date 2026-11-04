@@ -1,0 +1,747 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__ — 在线 PDF 工具</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  .file{display:none;gap:16px;align-items:flex-start;margin-top:18px;padding:14px;
+        background:var(--card);border:1px solid var(--line);border-radius:12px}
+  .file.on{display:flex}
+  .file .thumb{width:104px;height:128px;flex:0 0 auto;display:flex;align-items:center;
+        justify-content:center;background:#fafbfc;border-radius:8px;overflow:hidden}
+  .file .thumb img{max-width:100%;max-height:100%;box-shadow:0 1px 4px rgba(0,0,0,.15)}
+  .file .thumb .ph{color:#c0c6cf;font-size:12px;text-align:center;line-height:1.5;padding:0 6px}
+  .file .info{flex:1;min-width:0;padding-top:2px}
+  .file .nm{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .file .meta{color:var(--muted);font-size:13px;margin-top:5px}
+  .file .rm{position:static;background:none;border:1px solid var(--line);color:var(--muted);
+        border-radius:7px;padding:4px 12px;font-size:13px;cursor:pointer;font-family:inherit}
+  .file .rm:hover{border-color:var(--danger);color:var(--danger)}
+
+  .gate{display:none;margin:0 0 18px;padding:12px 15px;border-radius:10px;font-size:13.5px;
+        line-height:1.65;background:#fdf6e7;color:#8a5a00;border:1px solid #f0e0bd}
+  .gate.on{display:block}
+  .gate code{font-size:12px;background:#f7ead0;padding:1px 5px;border-radius:4px}
+
+  .opt{display:none;flex-direction:column;gap:18px;margin-top:20px;padding:16px 18px;
+       background:var(--card);border:1px solid var(--line);border-radius:12px}
+  .opt.show{display:flex}
+  .sec{display:none;flex-wrap:wrap;gap:16px 22px}
+  .sec.on{display:flex}
+  .field{flex:1;min-width:190px}
+  .field.wide{flex-basis:100%}
+  .field label{display:block;font-size:14px;font-weight:500;color:var(--text);margin-bottom:7px}
+  .field input[type=text],.field input[type=number],.field select,.field textarea{
+       width:100%;box-sizing:border-box;padding:9px 12px;border:1px solid var(--line);
+       border-radius:8px;font-size:14px;font-family:inherit;color:var(--text);
+       background:#fff;outline:none}
+  .field input:focus,.field select:focus,.field textarea:focus{border-color:var(--brand)}
+  .field textarea{min-height:76px;resize:vertical;line-height:1.5}
+  .field .hint{font-size:12.5px;color:var(--muted);line-height:1.55;margin-top:6px}
+  .field .inline{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--text)}
+  .field .inline input[type=checkbox]{width:auto}
+  .field input[type=color]{width:100%;height:38px;padding:2px;border:1px solid var(--line);
+       border-radius:8px;background:#fff;cursor:pointer}
+  .sep{height:1px;background:var(--line);margin:0}
+  .pair{display:flex;gap:10px;align-items:center;width:100%}
+  .pair input{flex:1}
+  .pair button{background:none;border:1px solid var(--line);border-radius:7px;
+       color:var(--muted);padding:7px 11px;cursor:pointer;font-family:inherit;font-size:13px}
+  .pair button:hover{border-color:var(--danger);color:var(--danger)}
+  .seed{background:none;border:1px dashed var(--line);border-radius:8px;padding:9px 14px;
+        color:var(--brand);font-size:13.5px;cursor:pointer;font-family:inherit}
+  .frow{display:flex;gap:10px;align-items:center;width:100%}
+  .frow label{flex:0 0 34%;margin:0;font-size:13.5px;font-weight:400;
+        word-break:break-all;color:var(--muted)}
+  .frow input{flex:1}
+  .fields{display:flex;flex-direction:column;gap:10px;width:100%}
+
+  .out{display:flex;align-items:center;gap:12px;margin:6px 0 14px}
+  .out .ico{width:46px;height:56px;flex:0 0 auto;border-radius:6px;background:#f3eafb;
+       color:#6a3a9c;display:flex;align-items:center;justify-content:center;
+       font-size:9.5px;font-weight:600;letter-spacing:.2px;text-align:center}
+  .out .nm{font-size:15px;font-weight:500;color:var(--text);word-break:break-all}
+  .out .meta{font-size:12.5px;color:var(--muted);margin-top:3px}
+  .audit{display:none;margin:0 0 14px;padding:11px 14px;border-radius:9px;
+         font-size:13px;line-height:1.65;background:#eef7f1;color:#1d6b45;
+         border:1px solid #d2e9db}
+  .audit.on{display:block}
+  .audit.warn{background:#fdf6e7;color:#8a5a00;border-color:#f0e0bd}
+  .audit b{font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav" id="nav"></nav>
+  <h1>__TITLE__</h1>
+  <p class="sub">__SUB__</p>
+
+  <div class="gate" id="gate">
+    <b>Pro 功能</b>　PDF 编辑当前仅对 Pro 开放，升级后即可使用。
+    自部署环境可设置 <code>PDFM_FREE_EDIT=1</code> 对免费版开放。
+  </div>
+
+  <div class="drop" id="drop">
+    <div><b>选择 PDF 文件</b> 或把文件拖到这里</div>
+    <small id="limits">单个文件最大 100 MB</small>
+    <input type="file" id="picker" accept="application/pdf" hidden>
+  </div>
+
+  <div class="file" id="file">
+    <div class="thumb" id="thumb"><span class="ph">加载中…</span></div>
+    <div class="info">
+      <div class="nm" id="fname"></div>
+      <div class="meta" id="fmeta"></div>
+    </div>
+    <button class="rm" id="remove">移除</button>
+  </div>
+
+  <div class="opt" id="optbox">
+    <div class="field wide">
+      <label for="pages">作用页码（留空 = 全部页面）</label>
+      <input type="text" id="pages" placeholder="1,3,5-7">
+      <div class="hint">页码从 1 开始；支持区间，例如 1-3,7。</div>
+    </div>
+
+    <div class="sec" id="sec-watermark">
+      <div class="field wide">
+        <label for="wmtext">水印文字</label>
+        <input type="text" id="wmtext" maxlength="120" placeholder="内部资料 · 请勿外传">
+        <div class="hint">写 <b>{page}</b> 显示当前页码、<b>{total}</b> 显示总页数；配合「底部居中」就是页码页脚。支持中文。</div>
+      </div>
+      <div class="field">
+        <label for="wmpos">位置</label>
+        <select id="wmpos"></select>
+      </div>
+      <div class="field">
+        <label for="wmsize">字号</label>
+        <input type="number" id="wmsize" value="36" min="6" max="96">
+      </div>
+      <div class="field">
+        <label for="wmopacity">不透明度</label>
+        <input type="number" id="wmopacity" value="0.3" min="0.05" max="1" step="0.05">
+      </div>
+      <div class="field">
+        <label for="wmangle">倾斜角度</label>
+        <select id="wmangle"></select>
+      </div>
+      <div class="field">
+        <label for="wmcolor">颜色</label>
+        <input type="color" id="wmcolor" value="#cc0000">
+      </div>
+      <div class="field">
+        <label>平铺</label>
+        <div class="inline"><input type="checkbox" id="wmtile"><span>整页重复铺满水印</span></div>
+      </div>
+    </div>
+
+    <div class="sec" id="sec-redact">
+      <div class="field wide">
+        <label for="rdwords">要抹掉的文字（每行一个）</label>
+        <textarea id="rdwords" placeholder="身份证号&#10;13800138000&#10;Confidential"></textarea>
+        <div class="hint">底层文字会被<b>真正删除</b>，不是盖一层黑框——复制、搜索都无法还原。</div>
+      </div>
+      <div class="field">
+        <label for="rdcolor">遮盖颜色</label>
+        <input type="color" id="rdcolor" value="#000000">
+      </div>
+    </div>
+
+    <div class="sec" id="sec-annotate">
+      <div class="field">
+        <label for="ankind">批注类型</label>
+        <select id="ankind"></select>
+      </div>
+      <div class="field">
+        <label for="ancolor">标注颜色</label>
+        <input type="color" id="ancolor" value="#ffd900">
+      </div>
+      <div class="field">
+        <label for="anauthor">批注人</label>
+        <input type="text" id="anauthor" value="pdfkit" maxlength="60">
+      </div>
+      <div class="field wide">
+        <label for="anwords">要标注的文字（每行一个）</label>
+        <textarea id="anwords" placeholder="Sign here"></textarea>
+      </div>
+      <div class="field wide">
+        <label for="annote">批注内容</label>
+        <textarea id="annote" maxlength="500" placeholder="法务复核：请确认条款"></textarea>
+        <div class="hint">「便签」「自由文本」必填；其他类型填写后作为批注备注附加。</div>
+      </div>
+    </div>
+
+    <div class="sec" id="sec-stamp">
+      <div class="field wide">
+        <label for="seal">印章 / 签名图片（JPG 或 PNG，透明底更佳）</label>
+        <input type="text" id="sealname" readonly placeholder="尚未选择图片" style="cursor:pointer">
+        <input type="file" id="seal" accept="image/png,image/jpeg" hidden>
+        <div class="hint" id="sealmeta">点击上方选择图片。</div>
+      </div>
+      <div class="field">
+        <label for="stpos">位置</label>
+        <select id="stpos"></select>
+      </div>
+      <div class="field">
+        <label for="stscale">大小（页宽占比）</label>
+        <input type="number" id="stscale" value="0.18" min="0.05" max="0.6" step="0.01">
+      </div>
+      <div class="field">
+        <label for="stopacity">不透明度</label>
+        <input type="number" id="stopacity" value="1" min="0.1" max="1" step="0.05">
+      </div>
+      <div class="field">
+        <label for="strot">旋转</label>
+        <select id="strot">
+          <option value="0">不旋转</option><option value="90">90°</option>
+          <option value="180">180°</option><option value="270">270°</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="sec" id="sec-form">
+      <div class="field wide">
+        <label>PDF 表单字段</label>
+        <button class="seed" id="readfields">读取表单字段</button>
+        <div class="hint">先上传并读出字段名，再逐项填写；读取后不会重复上传。</div>
+      </div>
+      <div class="fields" id="fields"></div>
+      <div class="field wide">
+        <div class="inline"><input type="checkbox" id="flatten" checked>
+          <span>扁平化：把填写结果烧进页面，任何阅读器都能看到且不可再改</span></div>
+      </div>
+    </div>
+
+    <div class="sec" id="sec-rewrite">
+      <div class="field wide">
+        <label>查找 / 替换</label>
+        <div class="fields" id="pairs"></div>
+        <div style="margin-top:10px"><button class="seed" id="addpair">+ 添加一条</button></div>
+        <div class="hint">在<b>原文本框内</b>替换：页码、印章、图片位置一律不动。新文字放不下时会保留原文并在结果里提示。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button class="primary" id="go" disabled>__ACTION__</button>
+    <span class="hint" id="hint"></span>
+  </div>
+
+  <div class="prog" id="prog"><i id="progbar"></i></div>
+  <div class="msg" id="msg"></div>
+
+  <div class="result" id="result">
+    <div class="ttl">编辑完成<span id="rsum"></span></div>
+    <div class="out">
+      <div class="ico" id="rico">PDF</div>
+      <div>
+        <div class="nm" id="rname"></div>
+        <div class="meta" id="rmeta"></div>
+      </div>
+    </div>
+    <div class="audit" id="audit"></div>
+    <div class="row">
+      <a class="dl" id="rdl" href="#">__RESULT__</a>
+      <button class="ghost" id="again">再编辑一个</button>
+    </div>
+    <div class="cd">文件将在 <b id="cd">--:--</b> 后自动删除，请及时下载。</div>
+  </div>
+
+  <div class="foot">
+    文件仅用于本次处理，到期自动删除。<br>
+    本站无需登录；为防滥用，按设备与网络地址做频率限制。
+  </div>
+</div>
+
+<script src="/static/nav.js"></script>
+<script>
+const TOOL = __TOOL_JSON__;
+const OP = TOOL.op;
+
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+let CFG = { max_file_mb: 100, max_pages: 5, ttl: 3600,
+            plan: { jobs_left: null, jobs_per_day: 0, edit: null } };
+let pdfFile = null, seal = null, cachedId = null;
+let busy = false, tick = null;
+
+const $ = s => document.querySelector(s);
+const drop = $("#drop"), picker = $("#picker"), go = $("#go"), msg = $("#msg"),
+      hint = $("#hint"), prog = $("#prog"), progbar = $("#progbar"),
+      result = $("#result"), fileBox = $("#file"), optbox = $("#optbox"),
+      audit = $("#audit"), gate = $("#gate");
+
+document.title = TOOL.title + " — 在线 PDF 工具";
+
+const POS_LABEL = {
+  tl: "左上", tc: "顶部居中", tr: "右上",
+  ml: "左侧居中", center: "正中", mc: "正中", mr: "右侧居中",
+  bl: "左下", bc: "底部居中", br: "右下"
+};
+const KIND_LABEL = {
+  highlight: "高亮", underline: "下划线", strike: "删除线",
+  squiggly: "波浪线", note: "便签", freetext: "自由文本"
+};
+
+function options(els, labels) {
+  els.forEach(el => {
+    el.innerHTML = labels.map(v => {
+      const val = typeof v === "string" ? v : v[0];
+      const lab = typeof v === "string" ? (POS_LABEL[v] || KIND_LABEL[v] || v) : v[1];
+      return `<option value="${val}">${lab}</option>`;
+    }).join("");
+  });
+}
+options([$("#wmpos"), $("#stpos")],
+        TOOL.positions.filter(p => p !== "mc"));
+options([$("#wmangle")], TOOL.angles.map(a => [a, a === 0 ? "不倾斜" : a + "°"]));
+options([$("#ankind")], TOOL.annotKinds.map(k => [k, KIND_LABEL[k] || k]));
+$("#wmpos").value = "center";
+$("#stpos").value = "br";
+$("#wmangle").value = "0";
+document.getElementById("sec-" + OP).classList.add("on");
+if (OP === "rewrite") addPair();
+if (OP === "stamp") {
+  $("#sealname").onclick = () => $("#seal").click();
+  $("#seal").onchange = e => {
+    const f = [...e.target.files][0];
+    if (!f) return;
+    if (!/^image\/(png|jpeg)$/.test(f.type)) {
+      showMsg("err", "印章只支持 JPG 或 PNG 图片"); return;
+    }
+    seal = f;
+    $("#sealname").value = f.name;
+    $("#sealmeta").textContent = mb(f.size) + " · 已选择";
+    clearMsg(); sync();
+  };
+}
+
+/* ---------- dynamic rows ---------- */
+function addPair(find = "", repl = "") {
+  const row = document.createElement("div");
+  row.className = "pair";
+  row.innerHTML = `<input type="text" class="pf" maxlength="200" placeholder="查找原文">
+                   <input type="text" class="pr" maxlength="200" placeholder="替换为">
+                   <button type="button" title="删除">移除</button>`;
+  row.querySelector(".pf").value = find;
+  row.querySelector(".pr").value = repl;
+  row.querySelector("button").onclick = () => { row.remove(); sync(); };
+  $("#pairs").appendChild(row);
+}
+$("#addpair").onclick = () => addPair();
+
+/* ---------- config / plan gate ---------- */
+async function fingerprint() {
+  const c = document.createElement("canvas");
+  c.width = 220; c.height = 40;
+  const x = c.getContext("2d");
+  x.textBaseline = "top"; x.font = "15px Arial";
+  x.fillStyle = "#f60"; x.fillRect(0, 0, 110, 22);
+  x.fillStyle = "#069"; x.fillText("pdfmerge-fp-\u{1F5C4}", 2, 4);
+  const raw = [c.toDataURL(), navigator.userAgent,
+    screen.width + "x" + screen.height + "x" + (screen.colorDepth || 0),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    (navigator.languages || []).join(","),
+    navigator.hardwareConcurrency || 0].join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].slice(0, 16)
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+let DEVICE = "";
+
+(async () => {
+  DEVICE = await fingerprint();
+  try {
+    const r = await fetch("/api/v1/config",
+                          { headers: { "X-Device-Id": DEVICE } });
+    if (!r.ok) return;
+    CFG = await r.json();
+    $("#limits").textContent =
+      `单个文件最大 ${CFG.max_file_mb} MB，最多 ${CFG.max_pages} 页`;
+    sync();
+  } catch (e) {}
+})();
+
+/* ---------- intake ---------- */
+drop.addEventListener("click", () => { if (!busy) picker.click(); });
+drop.addEventListener("dragover", e => { if (!busy) { e.preventDefault(); drop.classList.add("hot"); } });
+drop.addEventListener("dragleave", () => drop.classList.remove("hot"));
+drop.addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("hot");
+  if (!busy) add([...e.dataTransfer.files][0]);
+});
+picker.addEventListener("change", e => { add([...e.target.files][0]); picker.value = ""; });
+
+function add(f) {
+  clearMsg(); hideResult(); showProgress(0);
+  if (!f) return;
+  if (!/\.pdf$/i.test(f.name) && f.type !== "application/pdf") {
+    showMsg("err", "这个工具需要 PDF 文件"); return;
+  }
+  if (f.size > CFG.max_file_mb * 1048576) {
+    showMsg("err", `文件超过 ${CFG.max_file_mb} MB`); return;
+  }
+  pdfFile = f;
+  cachedId = null;
+  if (OP === "form") $("#fields").innerHTML = "";
+  fileBox.classList.add("on");
+  optbox.classList.add("show");
+  $("#fname").textContent = f.name;
+  $("#fmeta").textContent = mb(f.size) + " · 读取中…";
+  $("#thumb").innerHTML = '<span class="ph">加载中…</span>';
+  thumb();
+  sync();
+}
+
+async function thumb() {
+  if (!pdfFile) return;
+  try {
+    const data = await pdfFile.arrayBuffer();
+    const doc = await pdfjsLib.getDocument({ data }).promise;
+    const page = await doc.getPage(1);
+    const vp0 = page.getViewport({ scale: 1 });
+    const scale = Math.min(150 / vp0.width, 140 / vp0.height);
+    const vp = page.getViewport({ scale });
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(vp.width); c.height = Math.ceil(vp.height);
+    await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+    const slot = $("#thumb");
+    if (!slot) return;
+    slot.innerHTML = "";
+    const img = new Image();
+    img.src = c.toDataURL("image/jpeg", 0.8);
+    slot.appendChild(img);
+    $("#fmeta").textContent = `${doc.numPages} 页 · ${mb(pdfFile.size)}`;
+  } catch (e) {
+    $("#thumb").innerHTML = '<span class="ph">无法预览</span>';
+    if (pdfFile) $("#fmeta").textContent = mb(pdfFile.size);
+  }
+}
+
+$("#remove").onclick = () => {
+  if (busy) return;
+  pdfFile = null; seal = null; cachedId = null;
+  $("#fields").innerHTML = "";
+  fileBox.classList.remove("on");
+  optbox.classList.remove("show");
+  hideResult(); clearMsg(); showProgress(0); sync();
+};
+
+function gated() { return CFG.plan && CFG.plan.edit === false; }
+
+function sync() {
+  const p = CFG.plan || {};
+  const left = p.jobs_left;
+  const noQuota = typeof left === "number" && left <= 0;
+  const pro = gated();
+  gate.classList.toggle("on", pro);
+  const ready = OP === "form" ? $("#fields").querySelectorAll("[data-name]").length > 0
+              : OP === "stamp" ? !!seal : true;
+  go.disabled = busy || !pdfFile || !ready || noQuota || pro;
+  hint.textContent = pro ? "需要 Pro 才能使用编辑工具"
+    : !pdfFile ? ""
+    : !ready ? (OP === "form" ? "请先读取表单字段" : "请先选择印章图片")
+    : (left === null || left === undefined) ? "今天不限次数"
+    : (noQuota ? "今日额度已用完" : `今天还剩 ${left} 次免费额度`);
+  if (noQuota && pdfFile && !pro) showMsg("err", "今天的免费额度已用完，明天再来，或升级 Pro");
+}
+
+/* ---------- options payload ---------- */
+function words(v) {
+  return String(v || "").split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+}
+function buildOptions() {
+  const o = { op: OP, pages: $("#pages").value.trim(), name: pdfFile.name };
+  if (OP === "watermark") {
+    Object.assign(o, {
+      text: $("#wmtext").value.trim(), position: $("#wmpos").value,
+      size: $("#wmsize").value, opacity: $("#wmopacity").value,
+      angle: $("#wmangle").value, color: $("#wmcolor").value,
+      tile: $("#wmtile").checked
+    });
+  } else if (OP === "redact") {
+    Object.assign(o, { keywords: words($("#rdwords").value), color: $("#rdcolor").value });
+  } else if (OP === "annotate") {
+    Object.assign(o, {
+      kind: $("#ankind").value, keywords: words($("#anwords").value),
+      note: $("#annote").value.trim(), author: $("#anauthor").value.trim(),
+      color: $("#ancolor").value
+    });
+  } else if (OP === "stamp") {
+    Object.assign(o, {
+      position: $("#stpos").value, scale: $("#stscale").value,
+      opacity: $("#stopacity").value, rotation: $("#strot").value
+    });
+  } else if (OP === "form") {
+    const fields = {};
+    $("#fields").querySelectorAll("[data-name]").forEach(el => {
+      fields[el.dataset.name] = el.type === "checkbox" ? el.checked : el.value;
+    });
+    Object.assign(o, { fields, flatten: $("#flatten").checked });
+  } else if (OP === "rewrite") {
+    o.pairs = [...document.querySelectorAll(".pair")].map(row => ({
+      find: row.querySelector(".pf").value.trim(),
+      replace: row.querySelector(".pr").value
+    })).filter(p => p.find);
+  }
+  return o;
+}
+
+/* ---------- upload ---------- */
+async function uploadAll(onStep) {
+  const files = [{ name: pdfFile.name, size: pdfFile.size }];
+  const blobs = [pdfFile];
+  if (OP === "stamp") {
+    files.push({ name: seal.name, size: seal.size });
+    blobs.push(seal);
+  }
+  const r = await fetch("/api/v1/uploads", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+    body: JSON.stringify({ files })
+  });
+  if (!r.ok) throw await apiError(r);
+  const { uploads } = await r.json();
+  const ids = [];
+  for (let i = 0; i < uploads.length; i++) {
+    onStep(`正在上传 ${i + 1}/${uploads.length}…`);
+    await putFile(uploads[i].url, blobs[i],
+                  blobs[i].type || "application/pdf",
+                  sent => showProgress(Math.min(99, Math.round(sent / blobs[i].size * 100))));
+    ids.push(uploads[i].file_id);
+  }
+  showProgress(100);
+  return ids;
+}
+
+function putFile(url, blob, type, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url, true);
+    x.setRequestHeader("Content-Type", type);
+    x.setRequestHeader("X-Device-Id", DEVICE);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) return resolve();
+      let d = {};
+      try { d = (JSON.parse(x.responseText).detail) || {}; } catch (e) {}
+      reject(new Error(d.message || `上传失败 (${x.status})`));
+    };
+    x.onerror = () => reject(new Error("网络中断，请重试"));
+    x.send(blob);
+  });
+}
+
+/* ---------- form field discovery ---------- */
+$("#readfields").onclick = async () => {
+  if (busy || !pdfFile) return;
+  busy = true; setBusy(true); clearMsg();
+  try {
+    showMsg("info", "正在读取表单字段…");
+    const ids = cachedId ? [cachedId] : await uploadAll(() => {});
+    cachedId = ids[0];
+    const r = await fetch("/api/v1/edit/fields", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({ file_id: cachedId })
+    });
+    if (!r.ok) throw await apiError(r);
+    const data = await r.json();
+    if (!data.count) {
+      showMsg("err", "这个文件没有可填写的表单域，请换一个 PDF 表单");
+      $("#fields").innerHTML = "";
+    } else {
+      renderFields(data.fields);
+      clearMsg();
+    }
+  } catch (e) {
+    showMsg("err", e.message || "读取失败，请重试");
+  } finally {
+    busy = false; setBusy(false); showProgress(0); sync();
+  }
+};
+
+function renderFields(fields) {
+  $("#fields").innerHTML = "";
+  fields.forEach(f => {
+    const row = document.createElement("div");
+    row.className = "frow";
+    const label = document.createElement("label");
+    label.textContent = f.name || "(未命名字段)";
+    label.title = `${f.type_name || ""} · 第 ${f.page} 页`;
+    let input;
+    if (f.type_name === "CheckBox" || f.type === 2) {
+      input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = !!f.value && String(f.value).toLowerCase() !== "off";
+      input.style.flex = "0 0 auto";
+    } else if ((f.options || []).length) {
+      input = document.createElement("select");
+      input.innerHTML = f.options.map(v =>
+        `<option value="${esc(v)}"${String(v) === String(f.value) ? " selected" : ""}>${esc(v)}</option>`).join("");
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+      input.value = f.value == null ? "" : String(f.value);
+    }
+    input.dataset.name = f.name;
+    row.appendChild(label); row.appendChild(input);
+    $("#fields").appendChild(row);
+  });
+}
+
+/* ---------- submit ---------- */
+go.onclick = async () => {
+  if (busy || !pdfFile || gated()) return;
+  busy = true; setBusy(true); hideResult(); clearMsg();
+  try {
+    const opt = buildOptions();
+    showMsg("info", "正在上传…");
+    const ids = cachedId ? [cachedId] : await uploadAll(t => showMsg("info", t));
+    const files = ids.map(id => ({ file_id: id }));
+    showMsg("info", "正在编辑…");
+    const jr = await fetch("/api/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({ task: "edit", files, options: opt })
+    });
+    if (!jr.ok) throw await apiError(jr);
+    const job = await jr.json();
+    if (typeof job.jobs_left === "number" || job.jobs_left === null) {
+      CFG.plan = CFG.plan || {};
+      CFG.plan.jobs_left = job.jobs_left;
+    }
+    cachedId = null;   // the job owns those uploads now
+    await poll(job.job_id);
+  } catch (e) {
+    showMsg("err", e.message || "出错了，请重试");
+    showProgress(0);
+  } finally {
+    busy = false; setBusy(false); sync();
+  }
+};
+
+async function poll(jobId) {
+  for (let i = 0; i < 900; i++) {
+    await new Promise(r => setTimeout(r, 400));
+    const r = await fetch("/api/v1/jobs/" + jobId);
+    if (!r.ok) throw await apiError(r);
+    const j = await r.json();
+    if (j.status === "done") {
+      showProgress(0); clearMsg(); showResult(j); return;
+    }
+    if (j.status === "failed") throw new Error((j.error && j.error.message) || "编辑失败");
+    if (j.status === "queued") showMsg("info", "排队中…");
+    else { showProgress(100); prog.classList.add("indet"); showMsg("info", "正在编辑 PDF…"); }
+  }
+  throw new Error("等待超时，请重试");
+}
+
+/* ---------- result ---------- */
+function showResult(j) {
+  const r = j.result || {};
+  const base = (pdfFile && pdfFile.name || "document").replace(/\.[^.]+$/, "");
+  const summary = {
+    watermark: () => `${r.pages} 页 · 已添加${r.tile ? "平铺" : ""}水印`,
+    redact: () => `${r.pages} 页 · 抹掉 ${r.areas} 处内容`,
+    annotate: () => `${r.pages} 页 · ${r.annots} 条批注`,
+    stamp: () => `${r.pages} 页 · 已盖章`,
+    form: () => `${r.pages} 页 · 填写 ${r.filled} 个字段（${r.flattened ? "已扁平化" : "仍可编辑"}）`,
+    rewrite: () => `${r.pages} 页 · 改写 ${r.rewritten} 个文本框`
+  }[OP];
+  $("#rname").textContent = base + "_edited.pdf";
+  $("#rsum").textContent = "";
+  $("#rmeta").textContent = summary ? summary() : `${r.pages || j.pages} 页`;
+  renderAudit(r);
+  $("#rdl").href = j.download;
+  result.classList.add("on");
+  startCountdown(typeof j.expires_in === "number" ? j.expires_in : CFG.ttl);
+  result.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function renderAudit(r) {
+  const bits = [];
+  let warn = false;
+  if (r.warning) { bits.push(esc(r.warning)); warn = true; }
+  if ((r.missing || []).length) {
+    bits.push("文件中没有这些字段：" + esc(r.missing.join("、")));
+    warn = true;
+  }
+  if ((r.warnings || []).length) {
+    bits.push(...r.warnings.map(w => esc(w)));
+    warn = true;
+  }
+  if (OP === "redact") {
+    bits.unshift("底层文字已从内容流中删除，复制与搜索都无法还原。");
+  }
+  if (OP === "rewrite") {
+    bits.unshift(`共检查 ${r.boxes} 个文本框，改写 ${r.rewritten} 处，版式与页码保持不变。`);
+  }
+  audit.className = "audit on" + (warn ? " warn" : "");
+  audit.innerHTML = bits.join("<br>");
+  if (!bits.length) audit.className = "audit";
+}
+
+function hideResult() {
+  result.classList.remove("on");
+  audit.className = "audit";
+  audit.innerHTML = "";
+  if (tick) { clearInterval(tick); tick = null; }
+}
+
+function startCountdown(sec) {
+  if (tick) clearInterval(tick);
+  const el = $("#cd");
+  let left = Math.max(0, sec);
+  const fmt = s => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  el.textContent = fmt(left);
+  tick = setInterval(() => {
+    left -= 1;
+    el.textContent = fmt(Math.max(0, left));
+    if (left <= 0) {
+      clearInterval(tick); tick = null;
+      el.textContent = "已过期";
+      result.classList.remove("on");
+      showMsg("err", "结果已过期删除，请重新编辑。");
+    }
+  }, 1000);
+}
+
+$("#again").onclick = () => {
+  pdfFile = null; seal = null; cachedId = null;
+  $("#fields").innerHTML = "";
+  fileBox.classList.remove("on");
+  optbox.classList.remove("show");
+  hideResult(); clearMsg(); showProgress(0); sync();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
+
+/* ---------- misc ---------- */
+function setBusy(on) {
+  drop.classList.toggle("busy", on);
+  go.textContent = on ? "处理中…" : TOOL.action;
+}
+function showProgress(pct) {
+  if (!pct) { prog.classList.remove("on", "indet"); progbar.style.width = "0%"; return; }
+  prog.classList.add("on");
+  progbar.style.width = pct + "%";
+}
+async function apiError(res) {
+  let d = {};
+  try { d = (await res.json()).detail || {}; } catch (e) {}
+  if (res.status === 429) return new Error(d.message || "请求过于频繁，请稍后再试");
+  if (res.status === 503) return new Error(d.message || "服务繁忙，请稍后重试");
+  return new Error(d.message || `请求失败 (${res.status})`);
+}
+function showMsg(kind, text) { msg.className = "msg " + kind; msg.textContent = text; }
+function clearMsg() { msg.className = "msg"; msg.textContent = ""; }
+function mb(n) { return n > 1048576 ? (n / 1048576).toFixed(2) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+</script>
+</body>
+</html>

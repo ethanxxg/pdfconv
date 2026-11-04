@@ -1,8 +1,9 @@
-# pdfkit —— 在线 PDF 工具（15 个工具）
+# pdfkit —— 在线 PDF 工具（21 个工具）
 
-十五个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
-`service/tools.py` 一张表里，页面、导航、路由、校验全部从它派生——加一个转换
-是加一行，不是再抄一份页面。
+二十一个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
+`service/tools.py` 一张表里，页面、导航、路由、校验全部从它派生——加一个工具
+是加一行，不是再抄一份页面。其中六个结构化编辑工具是 **Pro 专属**，免费版在
+API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
 
 | 工具 | 页面 | 方向 |
 |---|---|---|
@@ -21,10 +22,17 @@
 | PDF 转图片 | `/media/pdf-to-image` | PDF → 每页一张 PNG/JPG（zip） |
 | 图片转 PDF | `/media/image-to-pdf` | 多张 JPG/PNG → 一个 PDF |
 | 转换 PDF/A | `/pdfa` | PDF → PDF/A-2b 或 3b（长期归档） |
+| 加水印 / 页码 | `/edit/watermark` | 文字水印 / 平铺水印 / 页眉页脚（Pro） |
+| 涂黑脱敏 | `/edit/redact` | 关键词或框选区域真正删除底层文字（Pro） |
+| 批注标注 | `/edit/annotate` | 高亮、下划线、删除线、便签、自由文本（Pro） |
+| 盖章 / 图片 | `/edit/stamp` | 把印章或签名图叠到九宫格位置（Pro） |
+| 填写 PDF 表单 | `/edit/form` | 读 AcroForm 字段、填写、可选扁平化（Pro） |
+| 文字原地改写 | `/edit/rewrite` | 在原文本框内查找替换，版式不动（Pro） |
 | 全部工具 | `/tools` | 工具网格 |
 
-合并、压缩、四个页面工具、两个图片工具与 PDF/A 归档是自研实现；六个转换方向复用
-本仓库的 `pdfconv/` 引擎。本文档同时是
+合并、压缩、四个页面工具、两个图片工具、PDF/A 归档与六个编辑工具是自研实现；
+其中「文字原地改写」复用 `pdfconv/translate_inplace.py` 的重排内核。六个转换方向
+复用本仓库的 `pdfconv/` 引擎。本文档同时是
 **容量模型的依据**，所有数字都来自本机实测，不是估算。
 
 ```
@@ -34,11 +42,14 @@ service/
   pages.py         页面工具任务体：拆分/提取/删除/旋转（进程池内运行）
   media.py         图片工具任务体：PDF 转图片 / 图片转 PDF（进程池内运行）
   pdfa.py          PDF/A 归档任务体（进程池内运行）
+  edit.py          六个结构化编辑任务体 + 表单字段发现（进程池内运行）
   jobs.py          任务状态机 + 有界队列 + 进程池
   storage.py       存储抽象（本地盘 → OSS/COS 只改这一个文件）
   limits.py        双桶令牌限流（IP + 设备指纹）
-  static/index.html 前端页面（pdf.js 客户端生成缩略图）
+  static/index.html 合并页（pdf.js 客户端生成缩略图）
+  static/edit.html 六个编辑工具共用的单模板，按 tool.op 切换表单
   test_e2e.py      端到端测试（10 项断言）
+  test_edit.py     编辑工具端到端测试（13 项，含 Pro 门槛）
   load_test.py     并发压测
   diag_cpu.py      并行扩展性测量
   diag_worker.py   进程池内每任务耗时拆分
@@ -148,10 +159,13 @@ API 层只处理几 KB 的 JSON，所以 5 万连接也只需要 2–4 台；一
 | GET | `/api/v1/jobs/{id}` | 状态 / 页数 / `queue_wait` / `run_time` / `expires_in` / 下载链接 |
 | GET | `/api/v1/jobs/{id}/download` | 重新签发下载链接 |
 | DELETE | `/api/v1/jobs/{id}` | 提前删除输入与输出 |
+| POST | `/api/v1/edit/fields` | 读 PDF 的 AcroForm 字段清单（同样受 Pro 门槛约束） |
 | GET | `/api/v1/download/{key}?exp=&sig=` | HMAC 签名下载，默认 15 分钟有效 |
 | GET | `/healthz` | worker 数、队列深度、限流桶数量、计数 |
 
-`task` 取 `merge` / `compress` / `convert` / `pages` / `media`，默认 `merge`。
+`task` 取 `merge` / `compress` / `convert` / `pages` / `media` / `pdfa` / `edit`，
+默认 `merge`。`edit.options.op` 再细分为 `watermark` / `redact` / `annotate` /
+`stamp` / `form` / `rewrite`。
 限额不是常量，来自 `plans.py` 的当前方案（免费版 20 MB / 5 页 / 1 次），
 `GET /api/v1/config` 下发什么，前端就显示什么。
 
@@ -272,6 +286,47 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
   base-14 字体（Helvetica 等）没有可嵌入的字形数据，报 warning 而不是假装合规
   ——这是「尽力归档 + 明示残留」，不是认证过的 PDF/A 校验器。
 
+### PDF 结构化编辑的边界
+
+`/edit/{tool}` 的六个操作共用一个模板 `static/edit.html`，靠 `TOOL.op` 切换表单；
+后端也只有一个 `service/edit.py`。这是**结构化编辑**：在原有页面上增删对象，
+页数、图片位置、印章、版式一律不动，而不是可自由拖拽的所见即所得编辑器。
+
+| 操作 | 做法 | 容易做错的地方 |
+|---|---|---|
+| `watermark` | `TextWriter` + `Font("china-s")`，`Matrix(angle)` 旋转，`opacity` / `morph` 控制透明度 | 用 Helvetica 写中文会丢字；`{page}` / `{total}` 要逐页替换，不能只算一次 |
+| `redact` | `search_for` 或归一化矩形 → `add_redact_annot` → `apply_redactions` | **只画黑框等于没脱敏**：字形仍留在内容流里，复制粘贴就能还原。`fill=False` 正是这个漏洞 |
+| `annotate` | 高亮/下划线/删除线/波浪线/便签/自由文本，可附着到关键词 | 批注要带 `info.content` 与作者，否则在 Acrobat 里看不到备注 |
+| `stamp` | `insert_image` 叠加第二个上传的印章图，九宫格定位 + 透明度 + 旋转 | 这个操作要 **2 个文件**，是唯一走完整 `paths` 列表的编辑任务 |
+| `form` | `page.widgets()` 读字段 → `Widget.update()` → `Document.bake()` 扁平化 | 不 `bake()` 的话值只在字段字典里，换阅读器可能不显示；生成器被提前物化成 list 会失效句柄 |
+| `rewrite` | 复用 `pdfconv/translate_inplace.py` 的「涂黑 → 测量 → 按字号重排」内核做字面查找替换 | 用正则会被用户输入触发回溯爆炸；长替换串要按字号收缩并如实报 `overflow` |
+
+实现上的几个约束：
+
+- **脱敏是真删除**。`apply_redactions(images=PDF_REDACT_IMAGE_NONE,
+  graphics=PDF_REDACT_LINE_ART_NONE)` 之后，原始词既不在 `get_text()` 里，也不在
+  输出文件的原始字节里——`test_edit.py` 两个都断言。
+- **中文用内置 Droid Sans Fallback**（`Font("china-s")`），不依赖系统字体，Linux
+  容器里也能渲染；纯拉丁文本仍走 Helvetica。
+- **字段读取也是接口**：`POST /api/v1/edit/fields` 返回
+  `{name, type, type_name, value, options, page}`，前端据此生成输入框。
+- **参数校验两遍**。API 层在扣额度之前先拒掉坏颜色、坏角度、坏页码、文件数不符，
+  worker 里再校验一次，防止绕过 HTTP 直接调用 `edit_task`。
+- **不做的事**：不提供 Word 式的自由重排、不移除他人水印、不破解口令/权限加密、
+  不直接编辑扫描件（先走 OCR）。这些要么是另一个产品形态，要么根本不该做。
+
+#### Pro 门槛
+
+编辑是付费钩子：`plans.py` 里免费版 `edit: false`、Pro `edit: true`。
+`create_job` 在任何文件读取、页数统计、`quota.take()` **之前**判断
+`task == "edit" and not plan["edit"]`，直接返回 403 `plan_limit`——被拦下不消耗
+当天唯一的免费额度，也不留下上传件状态。字段发现接口走同一个判断。
+`/api/v1/config` 下发 `plan.edit`，前端据此显示升级提示并禁用开始按钮；但前端
+只是体验，真正的判定只在服务端。
+
+`PDFM_FREE_EDIT=1` 可在本地把免费版放开（功能测试与自托管用），默认关闭；
+和 `PDFM_FREE_OCR` 一样是环境变量，不是客户端头。
+
 ### 付费分层怎么接
 
 所有限额集中在 `plans.py` 的 `PLANS` 表里，业务代码只读这张表：
@@ -284,6 +339,7 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
 | 每天任务数 | **1 次** | 不限 |
 | 批量压缩 | 否（一次 1 个文件） | 是 |
 | OCR（扫描件转 Word） | 是（默认，`PDFM_FREE_OCR=0` 关闭） | 是 |
+| 结构化编辑（6 个工具） | **否**（`PDFM_FREE_EDIT=1` 可放开） | 是 |
 
 接计费时只需要动一个函数：
 
@@ -292,7 +348,7 @@ def resolve_plan(request):   # plans.py
     return DEFAULT_PLAN      # ← 改成校验会话/签名令牌后返回 "pro"
 ```
 
-三条已经守住的边界：
+几条已经守住的边界：
 
 1. **不读任何客户端头**（如 `X-Plan`）。头是攻击者可控的，一旦信任它，付费层
    就形同虚设。`resolve_plan` 是唯一判定入口。
@@ -307,6 +363,8 @@ def resolve_plan(request):   # plans.py
 5. **前端先拦一次**。合并页在缩略图解析出页数后就禁用按钮并显示
    「合并后共 8 页，免费版最多 5 页」，压缩页在文件解析后直接拒绝，避免
    用户先把 20 MB 传完才被服务端打回。
+6. **Pro 门槛排在额度之前**。编辑类任务与字段发现都在碰文件、扣次数之前判定
+   403，所以「点了没权限」不会顺手烧掉当天的免费机会。
 
 额度显示必须带 `X-Device-Id` 请求头去问 `/api/v1/config`：配额是按设备键的，
 不带这个头服务端会退回 User-Agent 分组，于是「刚用完额度」的页面会显示
@@ -335,7 +393,8 @@ python service/run.py --port 9001   # 换端口
 
 ```bash
 python -m uvicorn service.main:app --host 0.0.0.0 --port 8090 --workers 1
-# 合并 http://127.0.0.1:8090/    压缩 http://127.0.0.1:8090/compress    转换 http://127.0.0.1:8090/tools
+# 合并 http://127.0.0.1:8090/    压缩 http://127.0.0.1:8090/compress
+# 工具网格 http://127.0.0.1:8090/tools    编辑 http://127.0.0.1:8090/edit/watermark
 ```
 
 ### 测试
@@ -348,6 +407,7 @@ python service/test_pages.py      # 12 项：拆分 / 提取 / 删除 / 旋转 +
 python service/test_media.py      # 10 项：PDF 转图片 / 图片转 PDF + 拒绝
 python service/test_ocr.py        # 4 项：扫描件转文字 + 数字 PDF 无副作用
 python service/test_pdfa.py       # 10 项：PDF/A-2b/3b + 拒绝 + 合规断言
+python service/test_edit.py       # 13 项：六个编辑操作 + 真脱敏 + Pro 门槛
 python service/test_limits.py     # 用生产默认值验证 5 页 / 20 MB / 1 次 / 无批量
 python service/shot_ui.py         # 合并页：真实浏览器跑一遍全部交互
 python service/shot_compress.py   # 压缩页：真实浏览器跑两条路径并截图
@@ -356,12 +416,15 @@ python service/shot_limits.py     # 浏览器里验证限额拦截与额度耗�
 python service/load_test.py 60    # 60 个并发任务
 ```
 
-这十二个端到端套件**都自己起服务**，不需要先手动启动，也不会和正在跑的实例抢端口。
-区别只在限额：
+这十三个套件**都自己起服务**，不需要先手动启动，也不会和正在跑的实例抢端口。
+四个 `shot_*.py` 额外需要 `playwright` 与本机 Edge/Chrome；九个 `test_*.py`
+只依赖 `service/requirements.txt`。区别只在限额：
 
-* `test_e2e` / `test_compress` / `test_convert` / `shot_ui` / `shot_compress` /
+* `test_e2e` / `test_compress` / `test_convert` / `test_pages` / `test_media` /
+  `test_ocr` / `test_pdfa` / `test_edit` / `shot_ui` / `shot_compress` /
   `shot_convert` 走 `service/_harness.py`：随机空闲端口 + 独立 `PDFM_DATA` + 放宽限额；
-* `test_limits` / `shot_limits` 故意**不共用** harness，自己按生产默认值起服务。
+* `test_limits` / `shot_limits` 故意**不共用** harness，自己按生产默认值起服务；
+* `test_edit` 起**两个**服务：`PDFM_FREE_EDIT=1` 跑功能，生产默认值跑付费墙。
 
 为什么要分开：语料里的论文是 8–30 页，功能套件必须放宽到 5000 页才跑得动；
 而限额又必须用**生产默认值**验证，否则「5 页」被改成「500 页」没人会发现。
@@ -372,7 +435,8 @@ python service/load_test.py 60    # 60 个并发任务
 环境变量：`PDFM_WORKERS`（默认 CPU-1）、`PDFM_QUEUE`（默认 64）、
 `PDFM_TTL`（默认 3600 秒）、`PDFM_DATA`、`PDFM_MAX_FILE_MB`（默认 20）、
 `PDFM_MAX_TASK_MB`、`PDFM_MAX_FILES`、`PDFM_MAX_PAGES`（默认 5）、
-`PDFM_FREE_JOBS_PER_DAY`（默认 1）、`PDFM_SECRET`、`PDFM_RATE_MULT`、
+`PDFM_FREE_JOBS_PER_DAY`（默认 1）、`PDFM_FREE_OCR`（默认 1）、
+`PDFM_FREE_EDIT`（默认 0）、`PDFM_SECRET`、`PDFM_RATE_MULT`、
 `PDFM_HOST`、`PDFM_PORT`。
 
 ## 八、部署（后台常驻 + 网页操作）
@@ -406,7 +470,7 @@ pdfkit
   note  : binding 0.0.0.0 exposes this to your network; there is no login by design
   merge : http://127.0.0.1:8090/
   compress: http://127.0.0.1:8090/compress
-  convert : http://127.0.0.1:8090/tools  (15 个工具 / 6 个转换方向)
+  convert : http://127.0.0.1:8090/tools  (21 个工具 / 6 个转换方向)
   workers: 7 PDF processes, 1 web process
   data   : C:\...\service\data
 ```

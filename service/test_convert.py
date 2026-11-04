@@ -118,8 +118,9 @@ CORE = {"merge", "compress", "pdf-to-word", "pdf-to-excel",
 PAGE = {"split", "extract", "delete", "rotate"}
 MEDIA = {"pdf-to-image", "image-to-pdf"}
 ARCHIVE = {"pdfa"}
-assert set(ids) == CORE | PAGE | MEDIA | ARCHIVE, ids
-assert len(ids) == 15, ids
+EDIT = {"watermark", "redact", "annotate", "stamp", "form", "rewrite"}
+assert set(ids) == CORE | PAGE | MEDIA | ARCHIVE | EDIT, ids
+assert len(ids) == 21, ids
 cfg = req("GET", "/api/v1/config")
 assert [t["id"] for t in cfg["tools"]] == ids, "config and /tools disagree"
 

@@ -1,7 +1,7 @@
 """Drive the tool grid and the generic conversion page in a real browser.
 
 The assertions are the parts a screenshot cannot prove: that the grid lists all
-eight tools, that the shared nav is built from the same registry (so a new tool
+21 tools, that the shared nav is built from the same registry (so a new tool
 cannot be invisible from the page you are already on), that the page refuses the
 wrong file type before uploading, and that the downloaded file is really the
 format the tool promised.
@@ -67,10 +67,10 @@ with sync_playwright() as pw:
     pg.wait_for_selector(".card")
     cards = pg.eval_on_selector_all(".card .t", "els => els.map(e => e.textContent.trim())")
     print("grid (%d):" % len(cards), cards)
-    assert len(cards) == 15, cards
+    assert len(cards) == 21, cards
     nav = pg.eval_on_selector_all(".nav a", "els => els.map(e => e.textContent.trim())")
     print("nav  (%d):" % len(nav), nav)
-    assert len(nav) == 16 and nav[-1] == "全部工具", nav
+    assert len(nav) == 22 and nav[-1] == "全部工具", nav
     pg.screenshot(path="work/_bench/conv_tools.png", full_page=True)
 
     # ------------------------------------------------- PDF -> Word (generic page)
