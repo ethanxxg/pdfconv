@@ -108,6 +108,28 @@ def _text_frame(body_spans, per_page=None, body=None, page_h=None):
     return [round(x0, 1), round(y0, 1), round(x1, 1), round(y1, 1)]
 
 
+def _default_layout(doc, pw, ph, path):
+    """A neutral layout for a text-less (scanned) PDF.
+
+    Body size is estimated from the page height (about 80 lines per page) and
+    margins are one inch.  ``graphics`` is deliberately empty: on a scan the
+    only "graphic" is the page image, and treating it as a figure would put
+    every OCR token outside the flow and rasterise the page instead.
+    """
+    body = max(8.0, min(14.0, round(ph / 80.0, 1)))
+    m = 72
+    return dict(
+        source=path, pages=len(doc), page=[pw, ph],
+        body_size=body, leading=round(body * 1.2, 1), columns=1,
+        frame=[m, m, pw - m, ph - m],
+        gutter=[round(pw / 2.0), round(pw / 2.0)],
+        margin={"L": m, "R": m, "F": m},
+        right={"L": pw - m, "R": pw - m, "F": pw - m},
+        math_fonts=[], italic_fonts=[], bold_fonts=[], body_fonts=[],
+        graphics=[], algo_boxes=[],
+    )
+
+
 def detect(path, verbose=False):
     doc = fitz.open(path)
     pages = _sample(doc)
@@ -119,6 +141,16 @@ def detect(path, verbose=False):
     per_page = [_page_spans(p) for p in pages]
     spans = [s for pg in per_page for s in pg]
     if not spans:
+        # A page with no text layer is exactly the case OCR exists for.  When
+        # an OCR engine is available (the service enables it per job), fall
+        # through with a neutral layout so the per-page OCR pass can fill the
+        # page.  Without one, the old error is still the honest answer.
+        try:
+            from . import ocr as _ocr
+            if _ocr.available():
+                return _default_layout(doc, pw, ph, path)
+        except Exception:
+            pass
         raise SystemExit("no extractable text in " + path)
 
     # ---- body size: character-weighted mode -------------------------------

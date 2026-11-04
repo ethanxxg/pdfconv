@@ -240,9 +240,17 @@ def extract_figures(page, graphics, tables, gut_l, gut_r, extra_rects=(),
         return any(bbox.intersects(b) and b.width > bbox.width * 0.6
                    for b in blocked)
 
+    # A full-page image on a page with no text layer is the scan itself, not a
+    # figure: the OCR pass turns it into text, and cropping it as a picture
+    # would both duplicate it and exclude every OCR token from the flow.
+    page_area = page.rect.get_area()
+    has_text = bool(page.get_text().strip())
+
     for im in page.get_image_info():
         bbox = fitz.Rect(im["bbox"])
         if bbox.width < 40 or bbox.height < 40:
+            continue
+        if not has_text and page_area and bbox.get_area() > 0.8 * page_area:
             continue
         if _covered(bbox):
             continue

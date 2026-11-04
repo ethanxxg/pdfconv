@@ -63,12 +63,16 @@ class Server:
         self.stop()
 
 
-def boot(name, pages=5000, file_mb=2048, jobs=0, workers=2, timeout=45):
+def boot(name, pages=5000, file_mb=2048, jobs=0, workers=2, timeout=45,
+         extra_env=None):
     """Start a server with relaxed limits and wait until /healthz answers.
 
     ``jobs=0`` means unlimited, matching the meaning of ``jobs_per_day`` in
     plans.py.  ``pages`` and ``file_mb`` are raised well past the corpus so the
     functional suites never trip an allowance.
+
+    ``extra_env`` overrides any of the above (and adds feature switches such as
+    ``PDFM_FREE_OCR``); it is applied last so it always wins.
     """
     data = os.path.join(ROOT, "service", "data_%s" % name)
     shutil.rmtree(data, ignore_errors=True)
@@ -83,6 +87,8 @@ def boot(name, pages=5000, file_mb=2048, jobs=0, workers=2, timeout=45):
         "PDFM_MAX_TASK_MB": "4096",
         "PDFM_FREE_JOBS_PER_DAY": str(jobs),
     })
+    if extra_env:
+        env.update({k: str(v) for k, v in extra_env.items()})
 
     port = free_port()
     base = "http://127.0.0.1:%d" % port

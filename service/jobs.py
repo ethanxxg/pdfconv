@@ -193,6 +193,14 @@ class Runner:
                 MediaError) as e:
             job.status = "failed"
             job.error = {"code": e.code, "message": e.message}
+        except SystemExit as e:
+            # The engine signals "no extractable text" with SystemExit, which
+            # is a BaseException and so would escape the handler below -- and a
+            # job whose done-callback raises never gets a final status, leaving
+            # the UI polling forever.  Turn it into a normal failure.
+            job.status = "failed"
+            job.error = {"code": "no_text",
+                         "message": str(e) or "文件没有可提取的文字"}
         except Exception:
             job.status = "failed"
             job.error = {"code": "internal", "message": "处理失败，请重试"}

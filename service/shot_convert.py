@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from service._harness import ROOT, boot  # noqa: E402
 
 os.chdir(ROOT)
-srv = boot("shot_convert", pages=5000)
+# This smoke asserts the locked-OCR state, so it runs with OCR off (it ships on
+# for real deployments); see test_ocr.py for the enabled path.
+srv = boot("shot_convert", pages=5000, extra_env={"PDFM_FREE_OCR": "0"})
 BASE = srv.base
 
 BENCH = "work/_bench"

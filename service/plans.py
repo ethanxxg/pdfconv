@@ -29,7 +29,10 @@ PLANS = {
         "max_pages": 5,          # pages in the finished document
         "jobs_per_day": 1,
         "batch_compress": False,  # one file per compress job
-        "ocr": False,             # scanned PDFs need Pro, as on smallpdf
+        # OCR ships enabled on the free tier because there are no accounts or
+        # billing yet -- leaving it Pro-only would mean nobody can use it.
+        # PDFM_FREE_OCR=0 restores it as the paid hook when billing lands.
+        "ocr": True,
         "levels": ["recommended", "less", "extreme"],
     },
     "pro": {
@@ -61,6 +64,11 @@ for _env, _key, _cast in (
             PLANS["free"][_key] = _cast(_v)
         except ValueError:
             pass
+
+# OCR is a boolean, so it needs its own parse (the loop above only casts ints).
+_v = os.environ.get("PDFM_FREE_OCR")
+if _v is not None:
+    PLANS["free"]["ocr"] = _v.strip().lower() in ("1", "true", "yes", "on")
 
 
 def resolve_plan(request):

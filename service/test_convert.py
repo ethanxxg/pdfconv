@@ -27,7 +27,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from service._harness import ROOT, boot  # noqa: E402
 
 os.chdir(ROOT)
-srv = boot("convert", pages=5000, jobs=0)
+# OCR now ships on the free tier; this suite owns the *gating* behaviour, so it
+# boots with OCR off to keep asserting the 403 and the needs_ocr refusal.
+srv = boot("convert", pages=5000, jobs=0,
+           extra_env={"PDFM_FREE_OCR": "0"})
 BASE = srv.base
 DEV = "test-convert-0001"
 

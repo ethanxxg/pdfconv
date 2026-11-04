@@ -149,7 +149,7 @@ API 层只处理几 KB 的 JSON，所以 5 万连接也只需要 2–4 台；一
 | GET | `/api/v1/download/{key}?exp=&sig=` | HMAC 签名下载，默认 15 分钟有效 |
 | GET | `/healthz` | worker 数、队列深度、限流桶数量、计数 |
 
-`task` 取 `merge` / `compress` / `convert`，默认 `merge`。
+`task` 取 `merge` / `compress` / `convert` / `pages` / `media`，默认 `merge`。
 限额不是常量，来自 `plans.py` 的当前方案（免费版 20 MB / 5 页 / 1 次），
 `GET /api/v1/config` 下发什么，前端就显示什么。
 
@@ -158,7 +158,7 @@ API 层只处理几 KB 的 JSON，所以 5 万连接也只需要 2–4 台；一
 | 字段 | 说明 |
 |---|---|
 | `tool` | 工具 id，见 `tools.py`；缺省 `pdf-to-word` |
-| `ocr` | 免费版恒 `false`，传 `true` 返回 403 `plan_limit` |
+| `ocr` | 扫描件转可编辑文字；免费版默认开启，`PDFM_FREE_OCR=0` 关闭后传 `true` 返回 403 `plan_limit` |
 | `name` | 只用来给下载文件命名；服务端剥掉路径分隔符与控制字符，**从不参与拼路径** |
 
 `GET /api/v1/tools` 返回工具清单，`/tools` 网格页和每页顶部的导航都从它生成——
@@ -225,12 +225,20 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
 
 - **只有 pdf → docx 能报页进度**。其余是引擎里一次阻塞调用，所以 `GET /jobs/{id}`
   的 `progress` 只在这一路出现，别的方向前端显示不确定进度条——不编一个假的百分比。
-- **扫描件默认拒绝**，返回 `needs_ocr`，而不是产出一份没有可编辑文字的文件——
-  后者在用户眼里就是「转坏了」。判据是采样前 3 页，平均每页文字少于 20 个字符。
-- **OCR 是付费钩子**，与 smallpdf 一致：`plans.py` 里 `ocr` 免费版 `false`、
-  Pro `true`。引擎本身只要装了 rapidocr 就会自动 OCR，所以「关」是在
-  `service/convert.py` 里临时替换 `pdfconv.ocr.available` 实现的——池里的
-  worker 进程会被复用，因此**每次调用都要重新设置**，不能只在进程启动时设一次。
+- **未开 OCR 时扫描件拒绝**，返回 `needs_ocr`，而不是产出一份没有可编辑文字的
+  文件——后者在用户眼里就是「转坏了」。判据是采样前 3 页，平均每页文字少于 20
+  个字符。
+- **OCR 默认开启**。扫描件（无文字层）由 rapidocr 识别后进入转换；`plans.py`
+  里免费版 `ocr` 默认 `true`（还没有账号/计费，关掉就没人能用），
+  `PDFM_FREE_OCR=0` 可恢复成付费钩子。引擎本身只要装了 rapidocr 就会自动 OCR，
+  所以「关」是在 `service/convert.py` 里临时替换 `pdfconv.ocr.available` 实现的
+  ——池里的 worker 进程会被复用，因此**每次调用都要重新设置**，不能只在进程启动
+  时设一次。
+- **完全无文字层的 PDF 现在能过版式检测**。`pdfconv.layout.detect` 原本以
+  `SystemExit` 拒绝这种文件；有 OCR 可用时改为返回一套中性版式（正文 10.5pt、
+  1 英寸边距），并把整页扫描图当作背景而不是插图——否则整页会被裁成一张图，
+  OCR 出来的文字反而被排除在正文之外。`SystemExit` 是 `BaseException`，
+  `jobs.py` 的 `_done` 也单独捕获它，避免任务永远停在 `running`。
 - **文件类型按容器判断，不看扩展名**。上传只校验 PDF 魔数或 zip 魔数（三种 OOXML
   共用），所以「把 .pptx 传到 Word 工具」能过上传这一关；`_detect_kind()` 打开 zip
   看 `word/` `xl/` `ppt/` 前缀，在**入队前**返回 400 `wrong_type`。
@@ -258,7 +266,7 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
 | 合并后页数 | **5 页** | 5000 页 |
 | 每天任务数 | **1 次** | 不限 |
 | 批量压缩 | 否（一次 1 个文件） | 是 |
-| OCR（扫描件转 Word） | 否 | 是 |
+| OCR（扫描件转 Word） | 是（默认，`PDFM_FREE_OCR=0` 关闭） | 是 |
 
 接计费时只需要动一个函数：
 
