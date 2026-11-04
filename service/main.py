@@ -449,7 +449,7 @@ async def create_job(request: Request):
 
     body = await request.json()
     task = str(body.get("task") or "merge").strip().lower()
-    if task not in ("merge", "compress", "convert"):
+    if task not in ("merge", "compress", "convert", "pages"):
         raise HTTPException(400, detail={"code": "bad_task",
                                          "message": "不支持的任务类型"})
 
@@ -478,6 +478,13 @@ async def create_job(request: Request):
             raise HTTPException(400, detail={
                 "code": "one_file",
                 "message": "一次只能转换 1 个文件"})
+    elif task == "pages":
+        # Every page operation works on one PDF: there is no meaningful
+        # "split two documents at once".
+        if len(raw) != 1:
+            raise HTTPException(400, detail={
+                "code": "one_file",
+                "message": "一次只能处理 1 个 PDF"})
     elif len(raw) != 1:
         # Batch compression is the paid hook: the free tier does one file, and
         # saying so is better than silently compressing only the first one.
@@ -542,6 +549,53 @@ async def create_job(request: Request):
             opts["max_pages"] = 5000
         # Carried only to name the downloaded file; never used to build a path.
         opts["name"] = _safe_stem((body.get("options") or {}).get("name"))
+    elif task == "pages":
+        o = body.get("options") or {}
+        op = str(o.get("op") or "").strip().lower()
+        if op not in ("split", "extract", "delete", "rotate"):
+            raise HTTPException(400, detail={"code": "bad_op",
+                                             "message": "未知的页面操作"})
+        opts["op"] = op
+        # Only names the download; never used to build a path.
+        opts["name"] = _safe_stem(o.get("name"))
+        if op == "split":
+            ranges = str(o.get("ranges") or "").strip()
+            if ranges:
+                opts["ranges"] = ranges
+            every = o.get("every")
+            if every not in (None, ""):
+                try:
+                    every = int(every)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, detail={
+                        "code": "bad_every", "message": "「每 N 页」必须是整数"})
+                if every < 1:
+                    raise HTTPException(400, detail={
+                        "code": "bad_every", "message": "「每 N 页」必须大于 0"})
+                opts["every"] = every
+            if not opts.get("ranges") and not opts.get("every"):
+                raise HTTPException(400, detail={
+                    "code": "bad_pages",
+                    "message": "请填写拆分区间，或设置每 N 页拆分"})
+        elif op in ("extract", "delete"):
+            spec = str(o.get("pages") or "").strip()
+            if not spec:
+                raise HTTPException(400, detail={
+                    "code": "bad_pages",
+                    "message": "请填写页码，例如 1,3,5-7"})
+            opts["pages"] = spec
+        elif op == "rotate":
+            try:
+                angle = int(o.get("angle") or 0)
+            except (TypeError, ValueError):
+                angle = 0
+            if angle not in (90, 180, 270):
+                raise HTTPException(400, detail={
+                    "code": "bad_angle", "message": "旋转角度只能是 90 / 180 / 270"})
+            opts["angle"] = angle
+            spec = str(o.get("pages") or "").strip()
+            if spec:
+                opts["pages"] = spec
 
     keys = ["in/" + f for f in fids]
     total = 0
@@ -579,11 +633,20 @@ async def create_job(request: Request):
         opts["out_ext"] = {"pdf": ".pdf", "jpg": ".jpg", "png": ".png"}[ckind]
         opts["name"] = _safe_stem((body.get("options") or {}).get("name"))
 
+    if task == "pages":
+        # Page tools are PDF-only.  Refuse a .docx here with a clean message
+        # instead of letting it reach the worker and fail on fitz.open.
+        pkind = await asyncio.to_thread(_detect_kind, storage.path(keys[0]))
+        if pkind != "pdf":
+            raise HTTPException(400, detail={
+                "code": "wrong_type",
+                "message": "页面工具只支持 PDF 文件"})
+
     # Page counting only applies to PDF inputs.  Merge and any PDF-source task
     # are PDF; Office -> PDF is checked in the worker (its page count is unknown
     # before rendering); image inputs have no pages at all, so the free-tier
     # page cap must not fire on them.
-    src_is_pdf = (task == "merge"
+    src_is_pdf = (task in ("merge", "pages")
                   or (tool is not None and tool["src"] == "pdf")
                   or (task == "compress" and opts.get("src_kind") == "pdf"))
     if src_is_pdf:
@@ -666,12 +729,17 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
     # guess: a DOCX sent as application/pdf is a file Word refuses to open.
     ext = os.path.splitext(key)[1].lower()
     kind = {".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx",
-            ".jpg": "jpg", ".jpeg": "jpg", ".png": "png"}.get(ext, "pdf")
+            ".jpg": "jpg", ".jpeg": "jpg", ".png": "png",
+            ".zip": "zip"}.get(ext, "pdf")
     media = tool_registry.MIME.get(kind, "application/pdf")
     job = store.get(os.path.splitext(os.path.basename(key))[0])
     stem = ((job.opts or {}).get("name") if job else None)
-    if job is not None and job.kind in ("convert", "compress"):
-        name = (stem or "compressed") + ext
+    if job is not None and job.kind in ("convert", "compress", "pages"):
+        if job.kind == "pages" and (job.opts or {}).get("op") == "split":
+            name = (stem or "split") + ".zip"
+        else:
+            default = "pages" if job.kind == "pages" else "compressed"
+            name = (stem or default) + ext
     elif key.startswith("out/"):
         name = "merged.pdf"
     else:
@@ -735,6 +803,61 @@ async def convert_page(tool_id: str):
         "__SUB__": tool["sub"],
         "__ACTION__": tool.get("action") or "开始转换",
         "__RESULT__": tool.get("result") or "下载文件",
+        "__ACCEPT__": ",".join(accept),
+        "__SRC_UP__": tool["src"].upper(),
+    }
+    for k, v in subs.items():
+        html = html.replace(k, v)
+    return HTMLResponse(html)
+
+
+@app.get("/pages/{tool_id}")
+async def pages_page(tool_id: str):
+    """One template, four page tools (split / extract / delete / rotate).
+
+    Like the convert page, the tool is baked in per request so the page never
+    flashes the wrong controls.  The op decides which inputs the template
+    reveals; the server still re-validates everything in create_job.
+    """
+    tool = tool_registry.get(tool_id)
+    if tool is None or tool.get("op") is None:
+        raise HTTPException(404, detail={"code": "no_such_tool",
+                                         "message": "没有这个工具"})
+    op = tool["op"]
+    labels = {
+        "extract": "要保留的页码（必填）",
+        "delete": "要删除的页码（必填）",
+        "split": "拆分区间（可选，如 1-3,5-7）",
+        "rotate": "要旋转的页码（留空 = 全部）",
+    }
+    payload = {
+        "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
+        "src": tool["src"], "dst": tool["dst"],
+        "accept": tool.get("accept") or [".pdf"],
+        "mime": tool.get("mime") or "application/pdf",
+        "op": op,
+        "action": tool.get("action") or "开始处理",
+        "result": tool.get("result") or "下载文件",
+        # Every page op shows a page-spec field; split and rotate treat it as
+        # optional, extract/delete require it.
+        "showRange": True,
+        "showEvery": op == "split",
+        "showAngle": op == "rotate",
+        "rangeRequired": op in ("extract", "delete"),
+        "rangeLabel": labels.get(op, "页码"),
+        "rangePlaceholder": "1,3,5-7",
+        "every": 1,
+    }
+    page = os.path.join(os.path.dirname(__file__), "static", "pages.html")
+    with open(page, encoding="utf-8") as f:
+        html = f.read()
+    accept = payload["accept"]
+    subs = {
+        "__TOOL_JSON__": json.dumps(payload, ensure_ascii=False),
+        "__TITLE__": tool["title"],
+        "__SUB__": tool["sub"],
+        "__ACTION__": payload["action"],
+        "__RESULT__": payload["result"],
         "__ACCEPT__": ",".join(accept),
         "__SRC_UP__": tool["src"].upper(),
     }

@@ -1,6 +1,6 @@
-# pdfkit —— 在线 PDF 工具（8 个工具）
+# pdfkit —— 在线 PDF 工具（12 个工具）
 
-八个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
+十二个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
 `service/tools.py` 一张表里，页面、导航、路由、校验全部从它派生——加一个转换
 是加一行，不是再抄一份页面。
 
@@ -14,15 +14,21 @@
 | Word 转 PDF | `/convert/word-to-pdf` | docx → pdf |
 | Excel 转 PDF | `/convert/excel-to-pdf` | xlsx → pdf |
 | PPT 转 PDF | `/convert/ppt-to-pdf` | pptx → pdf |
+| 拆分 PDF | `/pages/split` | 一个 PDF → 多个 PDF（zip） |
+| 提取页面 | `/pages/extract` | 保留指定页 → 一个 PDF |
+| 删除页面 | `/pages/delete` | 删除指定页 → 一个 PDF |
+| 旋转页面 | `/pages/rotate` | 旋转全部/指定页 → 一个 PDF |
 | 全部工具 | `/tools` | 工具网格 |
 
-合并与压缩是自研实现；六个转换方向复用本仓库的 `pdfconv/` 引擎。本文档同时是
+合并、压缩与四个页面工具（拆分/提取/删除/旋转）是自研实现；六个转换方向复用
+本仓库的 `pdfconv/` 引擎。本文档同时是
 **容量模型的依据**，所有数字都来自本机实测，不是估算。
 
 ```
 service/
   main.py          FastAPI 路由与限流入口
   merge.py         合并任务体（进程池内运行）
+  pages.py         页面工具任务体：拆分/提取/删除/旋转（进程池内运行）
   jobs.py          任务状态机 + 有界队列 + 进程池
   storage.py       存储抽象（本地盘 → OSS/COS 只改这一个文件）
   limits.py        双桶令牌限流（IP + 设备指纹）
@@ -368,7 +374,7 @@ pdfkit
   note  : binding 0.0.0.0 exposes this to your network; there is no login by design
   merge : http://127.0.0.1:8090/
   compress: http://127.0.0.1:8090/compress
-  convert : http://127.0.0.1:8090/tools  (8 个工具 / 6 个转换方向)
+  convert : http://127.0.0.1:8090/tools  (12 个工具 / 6 个转换方向)
   workers: 7 PDF processes, 1 web process
   data   : C:\...\service\data
 ```

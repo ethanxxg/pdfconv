@@ -110,9 +110,11 @@ print("1. the tool registry is the single source of truth")
 tools = req("GET", "/api/v1/tools")["tools"]
 ids = [t["id"] for t in tools]
 print("   %d tools: %s" % (len(ids), ", ".join(ids)))
-assert len(ids) == 8, ids
-assert set(ids) == {"merge", "compress", "pdf-to-word", "pdf-to-excel",
-                    "pdf-to-ppt", "word-to-pdf", "excel-to-pdf", "ppt-to-pdf"}
+CORE = {"merge", "compress", "pdf-to-word", "pdf-to-excel",
+        "pdf-to-ppt", "word-to-pdf", "excel-to-pdf", "ppt-to-pdf"}
+PAGE = {"split", "extract", "delete", "rotate"}
+assert set(ids) == CORE | PAGE, ids
+assert len(ids) == 12, ids
 cfg = req("GET", "/api/v1/config")
 assert [t["id"] for t in cfg["tools"]] == ids, "config and /tools disagree"
 
@@ -121,7 +123,7 @@ for t in tools:
     body = req("GET", t["path"])
     assert t["title"].encode() in body, (t["path"], "title missing")
     assert b"__TOOL_JSON__" not in body, "placeholder left in the page"
-print("   all 8 pages substituted")
+print("   all %d pages substituted" % len(tools))
 
 # ---------------------------------------------------------------- refusals
 print("3. OCR is refused on the free tier, before any work")

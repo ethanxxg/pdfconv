@@ -30,6 +30,7 @@ MIME = {
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "png": "image/png",
+    "zip": "application/zip",
 }
 
 EXT = {"pdf": ".pdf", "docx": ".docx", "xlsx": ".xlsx", "pptx": ".pptx"}
@@ -46,6 +47,34 @@ TOOLS = {
         "title": "压缩文件", "src": "pdf", "dst": "pdf",
         "sub": "PDF、JPG、PNG 都能压：图片重采样、PDF 重排对象，画面与文字保持清晰。",
         "icon": "compress",
+    },
+    "split": {
+        "id": "split", "label": "拆分 PDF", "path": "/pages/split",
+        "title": "拆分 PDF", "src": "pdf", "dst": "pdf",
+        "sub": "按页码区间或每 N 页拆成多个 PDF，打包成 zip 下载。",
+        "icon": "split", "op": "split", "action": "开始拆分",
+        "result": "下载压缩包", "accept": [".pdf"], "mime": "application/pdf",
+    },
+    "extract": {
+        "id": "extract", "label": "提取页面", "path": "/pages/extract",
+        "title": "提取页面", "src": "pdf", "dst": "pdf",
+        "sub": "只保留你指定的页码，其余删除，导出一份新 PDF。",
+        "icon": "extract", "op": "extract", "action": "提取页面",
+        "result": "下载 PDF", "accept": [".pdf"], "mime": "application/pdf",
+    },
+    "delete": {
+        "id": "delete", "label": "删除页面", "path": "/pages/delete",
+        "title": "删除页面", "src": "pdf", "dst": "pdf",
+        "sub": "删掉指定的页码，保留剩下的页面。",
+        "icon": "delete", "op": "delete", "action": "删除页面",
+        "result": "下载 PDF", "accept": [".pdf"], "mime": "application/pdf",
+    },
+    "rotate": {
+        "id": "rotate", "label": "旋转页面", "path": "/pages/rotate",
+        "title": "旋转页面", "src": "pdf", "dst": "pdf",
+        "sub": "把全部或指定页面顺时针旋转 90 / 180 / 270 度。",
+        "icon": "rotate", "op": "rotate", "action": "旋转页面",
+        "result": "下载 PDF", "accept": [".pdf"], "mime": "application/pdf",
     },
     "pdf-to-word": {
         "id": "pdf-to-word", "label": "PDF 转 Word",
@@ -102,7 +131,8 @@ TOOLS = {
 # (merge / compress) last -- they sit right after PPT转PDF in the nav.
 ORDER = ["pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
          "word-to-pdf", "excel-to-pdf", "ppt-to-pdf",
-         "merge", "compress"]
+         "merge", "compress",
+         "split", "extract", "delete", "rotate"]
 
 # Conversions that go through the generic /convert page (everything else has a
 # bespoke page because the interaction is genuinely different).

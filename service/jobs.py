@@ -16,6 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 from .compress import compress_task, CompressError
 from .convert import convert_task, ConvertError
 from .merge import merge_task, MergeError
+from .pages import pages_task, PagesError
 
 
 class Job:
@@ -46,6 +47,10 @@ class Job:
             # Compress now takes PDF *or* JPG/PNG; the output extension must
             # match the source so the download route picks the right MIME.
             ext = (opts or {}).get("out_ext") or ".pdf"
+        elif kind == "pages":
+            # Split packs its many outputs into one zip; the other three page
+            # ops produce a single PDF.
+            ext = ".zip" if (opts or {}).get("op") == "split" else ".pdf"
         self.out_key = "out/%s%s" % (jid, ext)
         self.file_keys = file_keys
         self.rotations = rotations or [0] * len(file_keys)
@@ -138,6 +143,12 @@ class Runner:
                                            opts.get("max_pages"),
                                            bool(opts.get("ocr")),
                                            opts.get("progress_path"))
+                elif job.kind == "pages":
+                    fut = self.pool.submit(
+                        pages_task, paths[0], out_path, opts.get("op"),
+                        opts.get("max_pages"), opts.get("pages"),
+                        opts.get("angle"), opts.get("ranges"),
+                        opts.get("every"))
                 else:
                     fut = self.pool.submit(merge_task, paths, out_path,
                                            job.rotations,
@@ -164,7 +175,7 @@ class Runner:
             else:
                 job.pages = int(res or 0)
             job.status = "done"
-        except (MergeError, CompressError, ConvertError) as e:
+        except (MergeError, CompressError, ConvertError, PagesError) as e:
             job.status = "failed"
             job.error = {"code": e.code, "message": e.message}
         except Exception:
