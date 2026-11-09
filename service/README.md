@@ -22,12 +22,13 @@ API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
 | PDF 转图片 | `/media/pdf-to-image` | PDF → 每页一张 PNG/JPG（zip） |
 | 图片转 PDF | `/media/image-to-pdf` | 多张 JPG/PNG → 一个 PDF |
 | 转换 PDF/A | `/pdfa` | PDF → PDF/A-2b 或 3b（长期归档） |
-| 加水印 / 页码 | `/edit/watermark` | 文字水印 / 平铺水印 / 页眉页脚（Pro） |
-| 涂黑脱敏 | `/edit/redact` | 关键词或框选区域真正删除底层文字（Pro） |
-| 批注标注 | `/edit/annotate` | 高亮、下划线、删除线、便签、自由文本（Pro） |
-| 盖章 / 图片 | `/edit/stamp` | 把印章或签名图叠到九宫格位置（Pro） |
-| 填写 PDF 表单 | `/edit/form` | 读 AcroForm 字段、填写、可选扁平化（Pro） |
-| 文字原地改写 | `/edit/rewrite` | 在原文本框内查找替换，版式不动（Pro） |
+| 六个编辑工具（合一个页面） | `/edit` | 左侧操作侧栏：加水印 / 脱敏 / 批注 / 盖章 / 填表 / 改写，上传一次即可切换（均 Pro） |
+| └ 加水印 / 页码 | `/edit?op=watermark` | 文字水印 / 平铺水印 / 页眉页脚 |
+| └ 涂黑脱敏 | `/edit?op=redact` | 关键词真正删除底层文字 |
+| └ 批注标注 | `/edit?op=annotate` | 高亮、下划线、删除线、便签、自由文本 |
+| └ 盖章 / 图片 | `/edit?op=stamp` | 把印章或签名图叠到九宫格位置 |
+| └ 填写 PDF 表单 | `/edit?op=form` | 读 AcroForm 字段、填写、可选扁平化 |
+| └ 文字原地改写 | `/edit?op=rewrite` | 在原文本框内查找替换，版式不动 |
 | 全部工具 | `/tools` | 工具网格 |
 
 合并、压缩、四个页面工具、两个图片工具、PDF/A 归档与六个编辑工具是自研实现；
@@ -47,7 +48,7 @@ service/
   storage.py       存储抽象（本地盘 → OSS/COS 只改这一个文件）
   limits.py        双桶令牌限流（IP + 设备指纹）
   static/index.html 合并页（pdf.js 客户端生成缩略图）
-  static/edit.html 六个编辑工具共用的单模板，按 tool.op 切换表单
+  static/edit.html 六个编辑工具共用的单页编辑器（左侧操作侧栏切换，上传一次 PDF 即可切到任意操作）
   test_e2e.py      端到端测试（10 项断言）
   test_edit.py     编辑工具端到端测试（13 项，含 Pro 门槛）
   load_test.py     并发压测
@@ -288,7 +289,10 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
 
 ### PDF 结构化编辑的边界
 
-`/edit/{tool}` 的六个操作共用一个模板 `static/edit.html`，靠 `TOOL.op` 切换表单；
+六个编辑操作合在**单个页面 `/edit`**：左侧一个操作侧栏（加水印 / 脱敏 / 批注 /
+盖章 / 填表 / 改写），上传一次 PDF 后点击侧栏即可在六个表单之间切换，后端只收到一个
+`{task:"edit", options:{op:...}}` 任务。旧的 `/edit/{tool}` 链接会 307 跳转到
+`/edit?op={tool}`，所以工具网格和导航里的入口不用改。模板仍是 `static/edit.html`，
 后端也只有一个 `service/edit.py`。这是**结构化编辑**：在原有页面上增删对象，
 页数、图片位置、印章、版式一律不动，而不是可自由拖拽的所见即所得编辑器。
 
@@ -394,7 +398,7 @@ python service/run.py --port 9001   # 换端口
 ```bash
 python -m uvicorn service.main:app --host 0.0.0.0 --port 8090 --workers 1
 # 合并 http://127.0.0.1:8090/    压缩 http://127.0.0.1:8090/compress
-# 工具网格 http://127.0.0.1:8090/tools    编辑 http://127.0.0.1:8090/edit/watermark
+# 工具网格 http://127.0.0.1:8090/tools    编辑 http://127.0.0.1:8090/edit
 ```
 
 ### 测试

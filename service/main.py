@@ -1276,45 +1276,52 @@ async def pdfa_page():
     return HTMLResponse(html)
 
 
-@app.get("/edit/{tool_id}")
-async def edit_page(tool_id: str):
-    """One template, six structured-edit operations.
+@app.get("/edit")
+async def edit_index(request: Request):
+    """Single unified editor: one page, a sidebar of six operations.
 
-    The op decides which controls the page reveals; the server re-validates
-    everything in create_job.  Positions, angles and annotation kinds are
-    injected from the same constants the worker uses, so the browser can never
-    offer a value the backend would refuse.
+    The browser builds the sidebar from the injected edit-tools list and keeps
+    the uploaded PDF while the user switches between operations, so a single
+    upload drives watermark/redact/annotate/stamp/form/rewrite.  The task
+    payload is still the same ``{task: "edit", options: {op: ...}}`` the worker
+    has always consumed — nothing in service/edit.py changes.
     """
-    tool = tool_registry.get(tool_id)
-    if tool is None or tool_id not in tool_registry.EDIT_TOOLS:
-        raise HTTPException(404, detail={"code": "no_such_tool",
-                                         "message": "没有这个工具"})
-    payload = {
-        "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
-        "op": tool["op"], "src": tool["src"], "dst": tool["dst"],
-        "accept": tool.get("accept") or [".pdf"],
-        "mime": tool.get("mime") or "application/pdf",
-        "action": tool.get("action") or "开始编辑",
-        "result": tool.get("result") or "下载 PDF",
-        "pro": bool(tool.get("pro")),
-        "positions": list(POSITIONS),
-        "angles": list(ANGLES),
-        "annotKinds": list(ANNOT_KINDS),
-    }
+    edits = [{
+        "id": i, "title": tool_registry.TOOLS[i]["title"],
+        "sub": tool_registry.TOOLS[i]["sub"], "op": tool_registry.TOOLS[i]["op"],
+        "icon": tool_registry.TOOLS[i].get("icon"),
+        "pro": bool(tool_registry.TOOLS[i].get("pro")),
+    } for i in tool_registry.ORDER if i in set(tool_registry.EDIT_TOOLS)]
+    op = request.query_params.get("op", "watermark")
+    if op not in {e["op"] for e in edits}:
+        op = "watermark"
     page = os.path.join(os.path.dirname(__file__), "static", "edit.html")
     with open(page, encoding="utf-8") as f:
         html = f.read()
     subs = {
-        "__TOOL_JSON__": json.dumps(payload, ensure_ascii=False),
-        "__TITLE__": tool["title"],
-        "__SUB__": tool["sub"],
-        "__ACTION__": payload["action"],
-        "__RESULT__": payload["result"],
-        "__ACCEPT__": ",".join(payload["accept"]),
+        "__EDITS_JSON__": json.dumps(edits, ensure_ascii=False),
+        "__POSITIONS__": json.dumps(list(POSITIONS), ensure_ascii=False),
+        "__ANGLES__": json.dumps(list(ANGLES), ensure_ascii=False),
+        "__ANNOT_KINDS__": json.dumps(list(ANNOT_KINDS), ensure_ascii=False),
+        "__OP0__": json.dumps(op),
+        "__TITLE__": "PDF 编辑器",
+        "__SUB__": "加水印、脱敏、批注、盖章、填表、改写——上传一次 PDF 即可切换使用（Pro 功能）。",
+        "__ACTION__": "开始编辑",
+        "__RESULT__": "下载 PDF",
+        "__ACCEPT__": ".pdf",
     }
     for k, v in subs.items():
         html = html.replace(k, v)
     return HTMLResponse(html)
+
+
+@app.get("/edit/{tool_id}")
+async def edit_page(tool_id: str):
+    """Back-compat: the old per-tool URLs now point at the unified editor."""
+    if tool_id not in tool_registry.EDIT_TOOLS:
+        raise HTTPException(404, detail={"code": "no_such_tool",
+                                         "message": "没有这个工具"})
+    return RedirectResponse(url="/edit?op=" + tool_id, status_code=307)
 
 
 # One stylesheet for every tool page: the palette and the drop zone were being
