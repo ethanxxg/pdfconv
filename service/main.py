@@ -36,6 +36,7 @@ from .limits import Limiter
 from .plans import PLANS, Quota, describe, plan_of, resolve_plan
 from .storage import LocalStorage, StorageError, new_secret
 from . import tools as tool_registry
+from . import capabilities
 
 # -- configuration ---------------------------------------------------------
 # Per-plan limits live in plans.py; these are the deployment-wide knobs that do
@@ -492,6 +493,17 @@ async def config(request: Request):
 async def tools_index():
     """The tool grid and the shared nav both build themselves from this."""
     return {"tools": tool_registry.describe_all()}
+
+
+@app.get("/api/v1/capabilities")
+async def capabilities_index():
+    """Machine-readable catalog for CLI / MCP / agent clients.
+
+    One entry per tool with its task/op, accepted files, Pro flag and a JSON
+    Schema for ``options``.  Clients render their command/tools list from this,
+    so a new tool only has to be registered in capabilities.py once.
+    """
+    return {"capabilities": capabilities.describe_all()}
 
 
 @app.post("/api/v1/edit/fields")

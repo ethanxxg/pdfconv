@@ -59,6 +59,10 @@ service/
   test_e2e.py      端到端测试（10 项断言）
   test_edit.py     编辑工具端到端测试（13 项，含 Pro 门槛）
   test_scan.py     拍照/证件扫描端到端测试（13 项）
+  test_ocr_text.py 独立图片转文字端到端测试（8 项）
+  test_cli.py      能力注册表与 CLI 端到端测试（6 项）
+  capabilities.py  给程序看的机器可读能力表（JSON Schema）
+  cli.py           命令行客户端（list/info/schema/run，仅标准库）
   load_test.py     并发压测
   diag_cpu.py      并行扩展性测量
   diag_worker.py   进程池内每任务耗时拆分
@@ -280,6 +284,29 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
 - pdf → xlsx 的「工作表数」取自产物文件本身，不是引擎返回值：引擎返回的是它写了
   几个表格页，而它还会额外加 `Overview`/`Text` 页，直接显示会自相矛盾。
 
+### 能力注册表与命令行客户端
+
+`GET /api/v1/capabilities` 是给**程序**看的清单：每个工具一项，含 `task`/`op`、
+接受的文件种类与数量、Pro 标记，以及一份 `options` 的 JSON Schema。它与给人看的
+`/api/v1/tools`（标题、图标、路径）同源，都从 `service/tools.py` + `service/capabilities.py`
+派生——加一个工具只登记一次，CLI、未来的 MCP 和 Skill 都读这张表。
+
+`service/cli.py` 是这张表的**薄客户端**，只依赖标准库：
+
+```bash
+python -m service.cli list                      # 列出全部能力
+python -m service.cli info scan                 # 看一项的契约
+python -m service.cli schema scan               # 打印 JSON Schema
+python -m service.cli run scan -i a.jpg -i b.jpg \
+       --opt mode=gray --opt dpi=150 -o scan.pdf
+```
+
+设计要点：CLI 不碰文档引擎。它先从能力表发现工具，用 JSON Schema 把 `--opt key=value`
+强制成正确的类型（布尔/整数/对象都按 schema 转），然后走浏览器同一套
+`上传 → 建任务 → 轮询 → 签名下载` API。**因此 CLI 调用和网页调用遵守完全相同的
+限额与免费/Pro 规则**，不存在第二套会漂移的实现。服务地址用 `PDFKIT_URL` 覆盖，
+默认 `http://127.0.0.1:8090`。文件数量下限（如 merge≥2、stamp=2）在上传前就拦下。
+
 ### PDF/A 归档的边界
 
 `/pdfa` 用 PyMuPDF 的原语自己拼归档合规性，没有引入额外的重依赖：
@@ -445,11 +472,11 @@ python service/shot_limits.py     # 浏览器里验证限额拦截与额度耗�
 python service/load_test.py 60    # 60 个并发任务
 ```
 
-这十三个套件**都自己起服务**，不需要先手动启动，也不会和正在跑的实例抢端口。
-四个 `shot_*.py` 额外需要 `playwright` 与本机 Edge/Chrome；九个 `test_*.py`
+这些套件**都自己起服务**，不需要先手动启动，也不会和正在跑的实例抢端口。
+四个 `shot_*.py` 额外需要 `playwright` 与本机 Edge/Chrome；其余 `test_*.py`
 只依赖 `service/requirements.txt`。区别只在限额：
 
-* `test_e2e` / `test_compress` / `test_convert` / `test_pages` / `test_media` /
+* `test_e2e` / `test_compress` / `test_convert` / `test_pages` / `test_media` / `test_scan` / `test_ocr_text` / `test_cli` /
   `test_ocr` / `test_pdfa` / `test_edit` / `shot_ui` / `shot_compress` /
   `shot_convert` 走 `service/_harness.py`：随机空闲端口 + 独立 `PDFM_DATA` + 放宽限额；
 * `test_limits` / `shot_limits` 故意**不共用** harness，自己按生产默认值起服务；
