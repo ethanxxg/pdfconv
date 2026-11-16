@@ -20,6 +20,7 @@ from .merge import merge_task, MergeError
 from .media import (pdf_to_images_task, images_to_pdf_task, MediaError)
 from .pages import pages_task, PagesError
 from .pdfa import pdfa_task, PdfaError
+from .scan import scan_task, ScanError
 
 
 class Job:
@@ -57,6 +58,10 @@ class Job:
         elif kind == "media":
             # PDF -> image returns a zip of PNG/JPG; image -> PDF returns a PDF.
             ext = ".zip" if (opts or {}).get("op") == "pdf2img" else ".pdf"
+        elif kind == "scan":
+            # Scans are PDFs by default; the "images" format returns a zip of
+            # the cleaned pictures instead.
+            ext = ".zip" if (opts or {}).get("fmt") == "images" else ".pdf"
         self.out_key = "out/%s%s" % (jid, ext)
         self.file_keys = file_keys
         self.rotations = rotations or [0] * len(file_keys)
@@ -169,6 +174,12 @@ class Runner:
                     fut = self.pool.submit(pdfa_task, paths[0], out_path,
                                            opts.get("part"),
                                            opts.get("max_pages"))
+                elif job.kind == "scan":
+                    # Every upload is a photo to enhance, so the whole list
+                    # travels (unlike single-document tasks).
+                    fut = self.pool.submit(scan_task, paths, out_path,
+                                           opts.get("options"),
+                                           opts.get("max_pages"))
                 elif job.kind == "edit":
                     # The whole path list travels: stamp needs a second upload
                     # (the seal image), the other five ops ignore paths[1:].
@@ -203,7 +214,7 @@ class Runner:
                 job.pages = int(res or 0)
             job.status = "done"
         except (MergeError, CompressError, ConvertError, PagesError,
-                MediaError, PdfaError, EditError) as e:
+                MediaError, PdfaError, EditError, ScanError) as e:
             job.status = "failed"
             job.error = {"code": e.code, "message": e.message}
         except SystemExit as e:

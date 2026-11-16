@@ -94,6 +94,22 @@ TOOLS = {
         "result": "下载 PDF", "accept": [".jpg", ".jpeg", ".png"],
         "mime": "image/jpeg",
     },
+    "scan": {
+        "id": "scan", "label": "拍照扫描", "path": "/media/scan",
+        "title": "拍照扫描", "src": "image", "dst": "pdf",
+        "sub": "手机拍的纸质文件一键变高清扫描件：自动裁边、拉正、去阴影、去噪锐化。",
+        "icon": "image", "op": "scan", "action": "开始扫描",
+        "result": "下载扫描件", "accept": [".jpg", ".jpeg", ".png"],
+        "mime": "image/jpeg",
+    },
+    "idcard": {
+        "id": "idcard", "label": "证件扫描", "path": "/media/idcard",
+        "title": "证件扫描", "src": "image", "dst": "pdf",
+        "sub": "身份证正反面自动识别、拉正成一比一标准尺寸，排版到一页 A4，可直接打印。",
+        "icon": "image", "op": "idcard", "action": "开始扫描",
+        "result": "下载证件扫描件", "accept": [".jpg", ".jpeg", ".png"],
+        "mime": "image/jpeg",
+    },
     "pdfa": {
         "id": "pdfa", "label": "PDF 转 PDF/A", "path": "/pdfa",
         "title": "PDF 转 PDF/A", "src": "pdf", "dst": "pdf",
@@ -212,7 +228,7 @@ ORDER = ["pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
          "word-to-pdf", "excel-to-pdf", "ppt-to-pdf",
          "merge", "compress",
          "split", "extract", "delete", "rotate",
-         "pdf-to-image", "image-to-pdf", "pdfa",
+         "pdf-to-image", "image-to-pdf", "scan", "idcard", "pdfa",
          "watermark", "redact", "annotate", "stamp", "form", "rewrite"]
 
 # The six structured-edit operations share one /edit template.  Keeping the

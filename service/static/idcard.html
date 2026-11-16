@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>__TITLE__ — 在线免费转换</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  .slots{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px;margin-top:16px}
+  .slot{background:var(--card);border:1px dashed var(--line);border-radius:10px;
+        min-height:230px;padding:14px;position:relative;transition:.12s;cursor:pointer}
+  .slot:hover{border-color:var(--brand)}
+  .slot.filled{border-style:solid}
+  .slot h2{font-size:13px;font-weight:600;margin:0 0 10px;color:var(--text)}
+  .slot .frame{width:100%;aspect-ratio:85.6/54;background:#fafbfc;border-radius:6px;
+        display:flex;align-items:center;justify-content:center;overflow:hidden;
+        color:var(--muted);font-size:12px}
+  .slot .frame img{width:100%;height:100%;object-fit:cover}
+  .slot .rm{position:absolute;top:10px;right:10px;border:0;background:rgba(0,0,0,.55);
+        color:#fff;width:22px;height:22px;border-radius:50%;cursor:pointer;
+        font-size:13px;line-height:1;padding:0}
+  .slot .nm{font-size:11.5px;color:var(--muted);margin-top:8px;
+        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  .opts{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:14px 16px;margin:16px 0 6px}
+  .opts h2{font-size:13px;font-weight:600;margin:0 0 12px;color:var(--text)}
+  .orow{display:flex;flex-wrap:wrap;gap:18px 26px;align-items:flex-end}
+  .fld{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+  .fld select{height:34px;border:1px solid var(--line);border-radius:7px;
+              background:var(--card);color:var(--text);padding:0 10px;font-size:13px;min-width:130px}
+  .tip{font-size:11.5px;color:var(--muted);margin-top:10px;line-height:1.6}
+
+  .out{display:flex;align-items:center;gap:12px;margin:6px 0 14px}
+  .out .ico{width:46px;height:56px;flex:0 0 auto;border-radius:6px;background:#fbe9e7;
+       color:#a3352a;display:flex;align-items:center;justify-content:center;
+       font-size:10.5px;font-weight:600;letter-spacing:.3px}
+  .out .nm{font-size:15px;font-weight:500;color:var(--text);word-break:break-all}
+  .out .meta{font-size:12.5px;color:var(--muted);margin-top:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav" id="nav"></nav>
+  <h1>__TITLE__</h1>
+  <p class="sub">__SUB__</p>
+
+  <div class="slots">
+    <div class="slot" id="slot0" data-i="0">
+      <h2>证件正面</h2>
+      <div class="frame" id="frame0">点击选择正面照片</div>
+      <div class="nm" id="nm0"></div>
+      <input type="file" id="pick0" accept="image/jpeg,image/png" hidden>
+    </div>
+    <div class="slot" id="slot1" data-i="1">
+      <h2>证件背面</h2>
+      <div class="frame" id="frame1">点击选择背面照片（可选）</div>
+      <div class="nm" id="nm1"></div>
+      <input type="file" id="pick1" accept="image/jpeg,image/png" hidden>
+    </div>
+  </div>
+
+  <div class="opts">
+    <h2>扫描设置</h2>
+    <div class="orow">
+      <label class="fld">色彩模式
+        <select id="mode">
+          <option value="color">彩色</option>
+          <option value="gray">灰度</option>
+          <option value="bw">黑白（打印更清晰）</option>
+        </select>
+      </label>
+      <label class="fld">清晰度
+        <select id="dpi">
+          <option value="150">标准 150 DPI</option>
+          <option value="200" selected>高清 200 DPI</option>
+          <option value="300">超清 300 DPI</option>
+        </select>
+      </label>
+    </div>
+    <div class="tip">正面照片必填；只扫正面时证件会居中排版，扫正反面时上下排列在一页 A4 上，按原尺寸 85.6 × 54 mm 输出。</div>
+  </div>
+
+  <div class="bar">
+    <button class="primary" id="go" disabled>__ACTION__</button>
+    <span class="hint" id="hint"></span>
+  </div>
+
+  <div class="prog" id="prog"><i id="progbar"></i></div>
+  <div class="msg" id="msg"></div>
+
+  <div class="result" id="result">
+    <div class="ttl">扫描完成</div>
+    <div class="out">
+      <div class="ico">PDF</div>
+      <div>
+        <div class="nm" id="rname"></div>
+        <div class="meta" id="rmeta"></div>
+      </div>
+    </div>
+    <div class="row">
+      <a class="dl" id="rdl" href="#">__RESULT__</a>
+      <button class="ghost" id="again">再扫一次</button>
+    </div>
+    <div class="cd">文件将在 <b id="cd">--:--</b> 后自动删除，请及时下载。</div>
+  </div>
+
+  <div class="foot">
+    文件仅用于本次扫描，到期自动删除。<br>
+    本站无需登录；为防滥用，按设备与网络地址做频率限制。
+  </div>
+</div>
+
+<script src="/static/nav.js"></script>
+<script>
+const TOOL = __TOOL_JSON__;
+let CFG = { max_file_mb: 20, max_task_mb: 200, ttl: 3600,
+            plan: { jobs_left: null } };
+const picked = [null, null];       // {file, url, id}
+let seq = 0, busy = false, tick = null;
+
+const $ = s => document.querySelector(s);
+const go = $("#go"), msg = $("#msg"), hint = $("#hint"),
+      prog = $("#prog"), progbar = $("#progbar"), result = $("#result");
+document.title = TOOL.title + " — 在线免费转换";
+
+async function fingerprint() {
+  const c = document.createElement("canvas");
+  c.width = 220; c.height = 40;
+  const x = c.getContext("2d");
+  x.textBaseline = "top"; x.font = "15px Arial";
+  x.fillStyle = "#f60"; x.fillRect(0, 0, 110, 22);
+  x.fillStyle = "#069"; x.fillText("pdfmerge-fp-\u{1F5C4}", 2, 4);
+  const raw = [c.toDataURL(), navigator.userAgent,
+    screen.width + "x" + screen.height + "x" + (screen.colorDepth || 0),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    (navigator.languages || []).join(","),
+    navigator.hardwareConcurrency || 0].join("|");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].slice(0, 16)
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+let DEVICE = "";
+(async () => {
+  DEVICE = await fingerprint();
+  try {
+    const r = await fetch("/api/v1/config", { headers: { "X-Device-Id": DEVICE } });
+    if (!r.ok) return;
+    CFG = await r.json();
+  } catch (e) {}
+})();
+
+function isImage(f) {
+  return /\.(jpe?g|png)$/i.test(f.name) ||
+         f.type === "image/jpeg" || f.type === "image/png";
+}
+for (let i = 0; i < 2; i++) {
+  const slot = $("#slot" + i), pick = $("#pick" + i);
+  slot.addEventListener("click", e => {
+    if (busy || e.target.classList.contains("rm")) return;
+    pick.click();
+  });
+  pick.addEventListener("change", e => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    if (!isImage(f)) { showMsg("err", "请选择 JPG 或 PNG 图片"); return; }
+    if (f.size > CFG.max_file_mb * 1048576) {
+      showMsg("err", `「${f.name}」超过 ${CFG.max_file_mb} MB`); return;
+    }
+    setPicked(i, f);
+  });
+}
+function setPicked(i, f) {
+  if (picked[i]) URL.revokeObjectURL(picked[i].url);
+  picked[i] = { file: f, url: URL.createObjectURL(f), id: "u" + (seq++) };
+  const frame = $("#frame" + i);
+  frame.innerHTML = `<img src="${picked[i].url}" alt="">`;
+  $("#nm" + i).textContent = f.name;
+  $("#slot" + i).classList.add("filled");
+  if (!frame.querySelector(".rm")) {
+    const b = document.createElement("button");
+    b.className = "rm"; b.textContent = "×"; b.title = "移除";
+    b.onclick = ev => { ev.stopPropagation(); clearPicked(i); };
+    $("#slot" + i).appendChild(b);
+  }
+  clearMsg(); hideResult(); sync();
+}
+function clearPicked(i) {
+  if (!picked[i]) return;
+  URL.revokeObjectURL(picked[i].url);
+  picked[i] = null;
+  $("#frame" + i).textContent = i === 0 ? "点击选择正面照片" : "点击选择背面照片（可选）";
+  $("#nm" + i).textContent = "";
+  const b = $("#slot" + i).querySelector(".rm");
+  if (b) b.remove();
+  $("#slot" + i).classList.remove("filled");
+  sync(); hideResult();
+}
+
+function sync() {
+  const list = picked.filter(Boolean);
+  const left = (CFG.plan || {}).jobs_left;
+  const noQuota = typeof left === "number" && left <= 0;
+  const total = list.reduce((s, p) => s + p.file.size, 0);
+  go.disabled = busy || !picked[0] || noQuota || total > CFG.max_task_mb * 1048576;
+  hint.textContent = !picked[0] ? "请先选择证件正面照片"
+    : `${list.length} 张照片 · ${mb(total)}`
+      + (noQuota ? " · 今日额度已用完"
+                 : (typeof left === "number" ? ` · 今天还剩 ${left} 次` : ""));
+  if (noQuota) showMsg("err", "今天的免费额度已用完，明天再来，或升级 Pro");
+}
+
+go.onclick = async () => {
+  if (busy || !picked[0]) return;
+  const list = picked.filter(Boolean);
+  busy = true; go.textContent = "扫描中…"; hideResult();
+  try {
+    showMsg("info", "正在上传…");
+    const res = await fetch("/api/v1/uploads", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({ files: list.map(p =>
+        ({ name: p.file.name, size: p.file.size })) })
+    });
+    if (!res.ok) throw await apiError(res);
+    const { uploads } = await res.json();
+
+    let sentBefore = 0;
+    const totalBytes = list.reduce((s, p) => s + p.file.size, 0) || 1;
+    showProgress(0);
+    for (let i = 0; i < list.length; i++) {
+      await putFile(uploads[i].url, list[i].file, sent => {
+        const pct = Math.min(99, Math.round((sentBefore + sent) / totalBytes * 100));
+        showProgress(pct);
+        showMsg("info", `正在上传… ${i + 1}/${list.length} · ${pct}%`);
+      });
+      sentBefore += list[i].file.size;
+    }
+
+    showMsg("info", "正在生成证件扫描件…");
+    const jr = await fetch("/api/v1/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Device-Id": DEVICE },
+      body: JSON.stringify({
+        task: "scan",
+        files: uploads.map(u => ({ file_id: u.file_id })),
+        options: {
+          op: "idcard", mode: $("#mode").value, dpi: +$("#dpi").value,
+          fmt: "pdf", name: "idcard"
+        }
+      })
+    });
+    if (!jr.ok) throw await apiError(jr);
+    const job = await jr.json();
+    if (typeof job.jobs_left === "number" || job.jobs_left === null) {
+      CFG.plan = CFG.plan || {}; CFG.plan.jobs_left = job.jobs_left;
+    }
+    await poll(job.job_id);
+  } catch (e) {
+    showMsg("err", e.message || "出错了，请重试"); showProgress(0);
+  } finally {
+    busy = false; go.textContent = TOOL.action; sync();
+  }
+};
+
+function contentType(f) {
+  if (f.type === "image/png" || /\.png$/i.test(f.name)) return "image/png";
+  return "image/jpeg";
+}
+function putFile(url, blob, onProgress) {
+  return new Promise((resolve, reject) => {
+    const x = new XMLHttpRequest();
+    x.open("PUT", url, true);
+    x.setRequestHeader("Content-Type", contentType(blob));
+    x.setRequestHeader("X-Device-Id", DEVICE);
+    x.upload.onprogress = e => { if (e.lengthComputable) onProgress(e.loaded); };
+    x.onload = () => {
+      if (x.status >= 200 && x.status < 300) return resolve();
+      let d = {}; try { d = (JSON.parse(x.responseText).detail) || {}; } catch (e) {}
+      reject(new Error(d.message || `上传失败 (${x.status})`));
+    };
+    x.onerror = () => reject(new Error("网络中断，请重试"));
+    x.send(blob);
+  });
+}
+async function poll(jobId) {
+  for (let i = 0; i < 900; i++) {
+    await new Promise(r => setTimeout(r, 400));
+    const r = await fetch("/api/v1/jobs/" + jobId);
+    if (!r.ok) throw await apiError(r);
+    const j = await r.json();
+    if (j.status === "done") { showProgress(0); clearMsg(); showResult(j); return; }
+    if (j.status === "failed") throw new Error((j.error && j.error.message) || "扫描失败");
+    showMsg("info", j.status === "queued" ? "排队中…" : "正在生成证件扫描件…");
+    if (j.status === "running") { showProgress(100); prog.classList.add("indet"); }
+  }
+  throw new Error("等待超时，请重试");
+}
+
+function showResult(j) {
+  $("#rname").textContent = "idcard.pdf";
+  $("#rmeta").textContent = `${j.pages || 1} 页 A4 · ${j.result && j.result.images || 1} 面证件`;
+  $("#rdl").href = j.download;
+  result.classList.add("on");
+  startCountdown(typeof j.expires_in === "number" ? j.expires_in : CFG.ttl);
+  result.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function hideResult() {
+  result.classList.remove("on");
+  if (tick) { clearInterval(tick); tick = null; }
+}
+function startCountdown(sec) {
+  if (tick) clearInterval(tick);
+  const el = $("#cd"); let left = Math.max(0, sec);
+  const fmt = s => Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  el.textContent = fmt(left);
+  tick = setInterval(() => {
+    left -= 1; el.textContent = fmt(Math.max(0, left));
+    if (left <= 0) { clearInterval(tick); tick = null; el.textContent = "已过期";
+      result.classList.remove("on"); showMsg("err", "结果已过期删除，请重新扫描。"); }
+  }, 1000);
+}
+$("#again").onclick = () => {
+  clearPicked(0); clearPicked(1); clearMsg(); hideResult(); showProgress(0);
+  window.scrollTo({ top: 0, behavior: "smooth" });
+};
+
+function setBusy(on) { go.disabled = on || !picked[0]; }
+function showProgress(pct) {
+  if (!pct) { prog.classList.remove("on", "indet"); progbar.style.width = "0%"; return; }
+  prog.classList.add("on"); progbar.style.width = pct + "%";
+}
+async function apiError(res) {
+  let d = {}; try { d = (await res.json()).detail || {}; } catch (e) {}
+  if (res.status === 429) return new Error(d.message || "请求过于频繁，请稍后再试");
+  if (res.status === 503) return new Error(d.message || "服务繁忙，请稍后重试");
+  return new Error(d.message || `请求失败 (${res.status})`);
+}
+function showMsg(kind, text) { msg.className = "msg " + kind; msg.textContent = text; }
+function clearMsg() { msg.className = "msg"; msg.textContent = ""; }
+function mb(n) { return n > 1048576 ? (n / 1048576).toFixed(2) + " MB" : Math.max(1, Math.round(n / 1024)) + " KB"; }
+</script>
+</body>
+</html>

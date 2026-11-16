@@ -647,7 +647,7 @@ async def create_job(request: Request):
     body = await request.json()
     task = str(body.get("task") or "merge").strip().lower()
     if task not in ("merge", "compress", "convert", "pages", "media", "pdfa",
-                    "edit"):
+                    "scan", "edit"):
         raise HTTPException(400, detail={"code": "bad_task",
                                          "message": "不支持的任务类型"})
 
@@ -724,6 +724,16 @@ async def create_job(request: Request):
         else:
             raise HTTPException(400, detail={"code": "bad_op",
                                              "message": "未知的图片操作"})
+    elif task == "scan":
+        # Photo scanning takes one or more pictures; one page per photo.
+        if not raw:
+            raise HTTPException(400, detail={
+                "code": "no_files", "message": "没有选择图片"})
+        sop = str((body.get("options") or {}).get("op") or "scan").lower()
+        if sop == "idcard" and len(raw) > 2:
+            raise HTTPException(400, detail={
+                "code": "wrong_file_count",
+                "message": "证件扫描最多 2 张（正面和背面）"})
     elif len(raw) != 1:
         # Batch compression is the paid hook: the free tier does one file, and
         # saying so is better than silently compressing only the first one.
@@ -873,6 +883,39 @@ async def create_job(request: Request):
         opts["part"] = part
         # Only names the download; never used to build a path.
         opts["name"] = _safe_stem(o.get("name"))
+    elif task == "scan":
+        o = body.get("options") or {}
+        sop = str(o.get("op") or "scan").lower()
+        if sop not in ("scan", "idcard"):
+            raise HTTPException(400, detail={
+                "code": "bad_op", "message": "未知的扫描操作"})
+        mode = str(o.get("mode") or "color").lower()
+        if mode not in ("color", "gray", "bw"):
+            raise HTTPException(400, detail={
+                "code": "bad_mode", "message": "扫描模式只能是彩色 / 灰度 / 黑白"})
+        try:
+            dpi = int(o.get("dpi") or 200)
+        except (TypeError, ValueError):
+            dpi = 0
+        if dpi not in (150, 200, 300):
+            raise HTTPException(400, detail={
+                "code": "bad_dpi", "message": "分辨率只能是 150 / 200 / 300 DPI"})
+        fmt = str(o.get("fmt") or "pdf").lower()
+        if fmt not in ("pdf", "images"):
+            raise HTTPException(400, detail={
+                "code": "bad_fmt", "message": "输出格式只能是 PDF 或图片压缩包"})
+        # The card tool is a fixed A4 print sheet, not a zip of loose images.
+        if sop == "idcard" and fmt != "pdf":
+            raise HTTPException(400, detail={
+                "code": "bad_fmt", "message": "证件扫描只输出 PDF"})
+        opts["options"] = {
+            "op": sop, "mode": mode, "dpi": dpi, "fmt": fmt,
+            "crop": o.get("crop", True), "deskew": o.get("deskew", True),
+            "flatten": o.get("flatten", True), "denoise": o.get("denoise", True),
+            "sharpen": o.get("sharpen", True),
+        }
+        opts["fmt"] = fmt
+        opts["name"] = _safe_stem(o.get("name"))
     elif task == "edit":
         o = body.get("options") or {}
         op = str(o.get("op") or "").strip().lower()
@@ -955,6 +998,14 @@ async def create_job(request: Request):
                         "message": "第 %d 个文件不是 JPG 或 PNG 图片"
                                    % (i + 1)})
 
+    if task == "scan":
+        for i, k in enumerate(keys):
+            ik = await asyncio.to_thread(_detect_compress_kind, storage.path(k))
+            if ik not in ("jpg", "png"):
+                raise HTTPException(400, detail={
+                    "code": "wrong_type",
+                    "message": "第 %d 个文件不是 JPG 或 PNG 图片" % (i + 1)})
+
     # Page counting only applies to PDF inputs.  Merge and any PDF-source task
     # are PDF; Office -> PDF is checked in the worker (its page count is unknown
     # before rendering); image inputs have no pages at all, so the free-tier
@@ -988,6 +1039,12 @@ async def create_job(request: Request):
                 "code": "too_many_pages",
                 "message": "共 %d 张图片，%s最多 %d 页"
                            % (len(keys), plan["name"], plan["max_pages"])})
+
+    if task == "scan" and len(keys) > plan["max_pages"]:
+        raise HTTPException(400, detail={
+            "code": "too_many_pages",
+            "message": "共 %d 张图片，%s最多 %d 页"
+                       % (len(keys), plan["name"], plan["max_pages"])})
 
     job = store.create(keys, dev, ip, rots, kind=task, opts=opts)
     out_path = storage.path(job.out_key)
@@ -1067,16 +1124,18 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
     job = store.get(os.path.splitext(os.path.basename(key))[0])
     stem = ((job.opts or {}).get("name") if job else None)
     if job is not None and job.kind in ("convert", "compress", "pages",
-                                        "media", "pdfa", "edit"):
+                                        "media", "pdfa", "scan", "edit"):
         op = (job.opts or {}).get("op")
         zipped = ((job.kind == "pages" and op == "split")
-                  or (job.kind == "media" and op == "pdf2img"))
+                  or (job.kind == "media" and op == "pdf2img")
+                  or (job.kind == "scan"
+                      and (job.opts or {}).get("fmt") == "images"))
         if zipped:
             name = (stem or "output") + ".zip"
         else:
             default = {"convert": "converted", "compress": "compressed",
-                       "pages": "pages", "media": "images",
-                       "pdfa": "archive", "edit": "edited"}[job.kind]
+                       "pages": "pages", "media": "images", "pdfa": "archive",
+                       "scan": "scanned", "edit": "edited"}[job.kind]
             name = (stem or default) + ext
     elif key.startswith("out/"):
         name = "merged.pdf"
@@ -1213,11 +1272,13 @@ async def media_page(tool_id: str):
     images in.  The tool is baked in per request, like the other tool pages.
     """
     tool = tool_registry.get(tool_id)
-    if tool is None or tool.get("op") not in ("pdf2img", "img2pdf"):
+    if tool is None or tool.get("op") not in ("pdf2img", "img2pdf", "scan",
+                                             "idcard"):
         raise HTTPException(404, detail={"code": "no_such_tool",
                                          "message": "没有这个工具"})
     op = tool["op"]
-    tpl = "pdf2image.html" if op == "pdf2img" else "image2pdf.html"
+    tpl = {"pdf2img": "pdf2image.html", "img2pdf": "image2pdf.html",
+           "scan": "scan.html", "idcard": "idcard.html"}[op]
     payload = {
         "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
         "op": op, "dst": tool["dst"],

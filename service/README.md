@@ -1,6 +1,6 @@
-# pdfkit —— 在线 PDF 工具（21 个工具）
+# pdfkit —— 在线 PDF 工具（23 个工具）
 
-二十一个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
+二十三个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
 `service/tools.py` 一张表里，页面、导航、路由、校验全部从它派生——加一个工具
 是加一行，不是再抄一份页面。其中六个结构化编辑工具是 **Pro 专属**，免费版在
 API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
@@ -21,6 +21,8 @@ API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
 | 旋转页面 | `/pages/rotate` | 旋转全部/指定页 → 一个 PDF |
 | PDF 转图片 | `/media/pdf-to-image` | PDF → 每页一张 PNG/JPG（zip） |
 | 图片转 PDF | `/media/image-to-pdf` | 多张 JPG/PNG → 一个 PDF |
+| 拍照扫描 | `/media/scan` | 照片 → 自动裁边/拉正/去阴影/锐化的高清扫描件（PDF 或 ZIP） |
+| 证件扫描 | `/media/idcard` | 身份证正反面 → 一页 A4 的标准尺寸扫描件 |
 | 转换 PDF/A | `/pdfa` | PDF → PDF/A-2b 或 3b（长期归档） |
 | 六个编辑工具（合一个页面） | `/edit` | 左侧操作侧栏：加水印 / 脱敏 / 批注 / 盖章 / 填表 / 改写，上传一次即可切换（均 Pro） |
 | └ 加水印 / 页码 | `/edit?op=watermark` | 文字水印 / 平铺水印 / 页眉页脚 |
@@ -31,7 +33,7 @@ API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
 | └ 文字原地改写 | `/edit?op=rewrite` | 在原文本框内查找替换，版式不动 |
 | 全部工具 | `/tools` | 工具网格 |
 
-合并、压缩、四个页面工具、两个图片工具、PDF/A 归档与六个编辑工具是自研实现；
+合并、压缩、四个页面工具、两个图片工具、拍照/证件扫描、PDF/A 归档与六个编辑工具是自研实现；
 其中「文字原地改写」复用 `pdfconv/translate_inplace.py` 的重排内核。六个转换方向
 复用本仓库的 `pdfconv/` 引擎。本文档同时是
 **容量模型的依据**，所有数字都来自本机实测，不是估算。
@@ -42,6 +44,7 @@ service/
   merge.py         合并任务体（进程池内运行）
   pages.py         页面工具任务体：拆分/提取/删除/旋转（进程池内运行）
   media.py         图片工具任务体：PDF 转图片 / 图片转 PDF（进程池内运行）
+  scan.py          拍照扫描 / 证件扫描任务体（进程池内运行）
   pdfa.py          PDF/A 归档任务体（进程池内运行）
   edit.py          六个结构化编辑任务体 + 表单字段发现（进程池内运行）
   jobs.py          任务状态机 + 有界队列 + 进程池
@@ -49,8 +52,11 @@ service/
   limits.py        双桶令牌限流（IP + 设备指纹）
   static/index.html 合并页（pdf.js 客户端生成缩略图）
   static/edit.html 六个编辑工具共用的单页编辑器（左侧操作侧栏切换，上传一次 PDF 即可切到任意操作）
+  static/scan.html 拍照扫描页：输出格式/色彩/清晰度 + 五个增强开关
+  static/idcard.html 证件扫描页：正反面两个上传槽 + 色彩/清晰度
   test_e2e.py      端到端测试（10 项断言）
   test_edit.py     编辑工具端到端测试（13 项，含 Pro 门槛）
+  test_scan.py     拍照/证件扫描端到端测试（13 项）
   load_test.py     并发压测
   diag_cpu.py      并行扩展性测量
   diag_worker.py   进程池内每任务耗时拆分
@@ -164,7 +170,7 @@ API 层只处理几 KB 的 JSON，所以 5 万连接也只需要 2–4 台；一
 | GET | `/api/v1/download/{key}?exp=&sig=` | HMAC 签名下载，默认 15 分钟有效 |
 | GET | `/healthz` | worker 数、队列深度、限流桶数量、计数 |
 
-`task` 取 `merge` / `compress` / `convert` / `pages` / `media` / `pdfa` / `edit`，
+`task` 取 `merge` / `compress` / `convert` / `pages` / `media` / `scan` / `pdfa` / `edit`，
 默认 `merge`。`edit.options.op` 再细分为 `watermark` / `redact` / `annotate` /
 `stamp` / `form` / `rewrite`。
 限额不是常量，来自 `plans.py` 的当前方案（免费版 20 MB / 5 页 / 1 次），
@@ -286,6 +292,23 @@ python-pptx 写，**没有 Aspose、没有 LibreOffice**）。服务层只做引
 - 字体嵌入会逐项审计并如实返回 `{fonts_embedded, fonts_total, warnings}`。
   base-14 字体（Helvetica 等）没有可嵌入的字形数据，报 warning 而不是假装合规
   ——这是「尽力归档 + 明示残留」，不是认证过的 PDF/A 校验器。
+
+### 拍照扫描的边界
+
+`/media/scan` 与 `/media/idcard` 是**照片预处理**，不是拍照 App：用户在手机上
+拍好照再上传，服务端用 `pdfconv/scan.py` 的 OpenCV 管线做自动裁边（Otsu + 形态学
+闭合找纸张四边形，透视变换拉正）、Hough 线检测拉正角度、背景除法去阴影、双边
+滤波降噪、CLAHE 之外的锐化与三种色彩模式。管线每一级都是**防御式**的：找不到
+纸张就跳过裁边，检测不到倾斜就不旋转——误裁比不裁更糟。
+
+- 裁边找的是「亮纸 + 暗背景」；若纸张与桌面颜色接近，应手动关掉自动裁边。
+- 去阴影把模糊背景映射到固定白点（约 245），不是图像均值：裁完的纸本来就亮，
+  用均值会把整页压灰。这道坑在实测里发现并修过。
+- `/media/scan` 输出 PDF（一照片一页）或 cleaned images 的 zip；
+  `/media/idcard` 把 1–2 张证件照识别成 ISO 7810 尺寸（85.6 × 54 mm）后排到一页
+  A4，只输出 PDF，便于直接打印。
+- 不做：内容识别式的证件字段提取、OCR 后回填、批量证件排版、人像美颜。
+  这些属于后续 P1（OCR 产品化）的范畴。
 
 ### PDF 结构化编辑的边界
 
@@ -474,7 +497,7 @@ pdfkit
   note  : binding 0.0.0.0 exposes this to your network; there is no login by design
   merge : http://127.0.0.1:8090/
   compress: http://127.0.0.1:8090/compress
-  convert : http://127.0.0.1:8090/tools  (21 个工具 / 6 个转换方向)
+  convert : http://127.0.0.1:8090/tools  (23 个工具 / 6 个转换方向)
   workers: 7 PDF processes, 1 web process
   data   : C:\...\service\data
 ```
