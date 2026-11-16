@@ -54,11 +54,14 @@ service/
   limits.py        双桶令牌限流（IP + 设备指纹）
   static/index.html 合并页（pdf.js 客户端生成缩略图）
   static/edit.html 六个编辑工具共用的单页编辑器（左侧操作侧栏切换，上传一次 PDF 即可切到任意操作）
+  static/capture.html 手机拍摄端 PWA：摄像头取景 + 纸张框 + 四种拍摄模式
   static/scan.html 拍照扫描页：输出格式/色彩/清晰度 + 五个增强开关
   static/idcard.html 证件扫描页：正反面两个上传槽 + 色彩/清晰度
   test_e2e.py      端到端测试（10 项断言）
   test_edit.py     编辑工具端到端测试（13 项，含 Pro 门槛）
   test_scan.py     拍照/证件扫描端到端测试（13 项）
+  test_capture.py  拍摄端 PWA 与实时纸张框检测（6 项）
+  shot_capture.py  拍摄端浏览器流程（假摄像头，6 项）
   test_ocr_text.py 独立图片转文字端到端测试（8 项）
   test_cli.py      能力注册表与 CLI 端到端测试（6 项）
   capabilities.py  给程序看的机器可读能力表（JSON Schema）
@@ -322,6 +325,23 @@ python -m service.cli run scan -i a.jpg -i b.jpg \
   base-14 字体（Helvetica 等）没有可嵌入的字形数据，报 warning 而不是假装合规
   ——这是「尽力归档 + 明示残留」，不是认证过的 PDF/A 校验器。
 
+### 手机拍摄端（PWA）
+
+`/capture` 是扫描的**拍摄端**：手机浏览器打开后可「添加到主屏幕」当 App 用。
+它不上传现成照片，而是直接调 `getUserMedia` 开后置摄像头，提供四种模式
+（单页 / 多页连拍 / 证件 / 书籍）、取景框、闪光与翻转镜头，以及**实时纸张框检测**
+——预览帧走 `/api/v1/capture/frame`，用的是扫描路径同一个 `_paper_quad` 检测器，
+所以取景框预测的就是真正会裁到的区域。
+
+- 取景框按模式变形：普通页面是 A4 竖版，证件是 1.586:1 横版，书籍是横向双页。
+- 拍摄后先进本地胶片条（可删、可重拍），再一次性上传并交给 `/media/scan` 的
+  `task=scan` 任务；证件模式固定走 `op=idcard` 的两面排版。
+- 结果页有「继续编辑」：把扫描产物重新上传后跳 `/edit`，拍 → 扫 → 编辑一条线打通。
+- 浏览器要求相机权限，且 `getUserMedia` 只在 HTTPS 或 localhost 下可用；PWA 的
+  `manifest.webmanifest` 与 `icon.svg` 从 `/static/` 提供。
+- 这里**没有**做连续自动拍摄、书籍曲面展平、去手指/摩尔纹/背面透字——那些是
+  拍摄端的下一批 AI 能力。
+
 ### 拍照扫描的边界
 
 `/media/scan` 与 `/media/idcard` 是**照片预处理**，不是拍照 App：用户在手机上
@@ -473,10 +493,10 @@ python service/load_test.py 60    # 60 个并发任务
 ```
 
 这些套件**都自己起服务**，不需要先手动启动，也不会和正在跑的实例抢端口。
-四个 `shot_*.py` 额外需要 `playwright` 与本机 Edge/Chrome；其余 `test_*.py`
+五个 `shot_*.py` 额外需要 `playwright` 与本机 Edge/Chrome；其余 `test_*.py`
 只依赖 `service/requirements.txt`。区别只在限额：
 
-* `test_e2e` / `test_compress` / `test_convert` / `test_pages` / `test_media` / `test_scan` / `test_ocr_text` / `test_cli` /
+* `test_e2e` / `test_compress` / `test_convert` / `test_pages` / `test_media` / `test_scan` / `test_capture` / `test_ocr_text` / `test_cli` /
   `test_ocr` / `test_pdfa` / `test_edit` / `shot_ui` / `shot_compress` /
   `shot_convert` 走 `service/_harness.py`：随机空闲端口 + 独立 `PDFM_DATA` + 放宽限额；
 * `test_limits` / `shot_limits` 故意**不共用** harness，自己按生产默认值起服务；

@@ -31,6 +31,7 @@ import pymupdf as fitz
 
 from .edit import (ANGLES, ANNOT_KINDS, OPS as EDIT_OPS, POSITIONS,
                    form_fields)
+from pdfconv import scan as scan_engine
 from .jobs import Runner, JobStore
 from .limits import Limiter
 from .plans import PLANS, Quota, describe, plan_of, resolve_plan
@@ -539,6 +540,39 @@ async def edit_form_fields(request: Request):
         raise HTTPException(400, detail={"code": "bad_pdf",
                                          "message": "无法读取表单，请检查文件"})
     return {"fields": fields, "count": len(fields)}
+
+
+@app.post("/api/v1/capture/frame")
+async def capture_frame(request: Request):
+    """Detect a document frame in a camera preview frame.
+
+    The capture PWA uploads a low-res preview frame and draws the returned quad
+    back as a live viewfinder guide.  Same detector as the scan path, so the
+    guide predicts the actual crop.  Deliberately cheap and unmetered by quota:
+    it costs one small detection, creates no job, and is throttled by the same
+    IP/device buckets as uploads.
+    """
+    guard(request, (IP_UPLOAD[0], IP_UPLOAD[1]))
+    body = await request.json()
+    fid = str(body.get("file_id") or "").strip()
+    if not fid or len(fid) > 128:
+        raise HTTPException(400, detail={"code": "bad_file_id",
+                                         "message": "文件无效"})
+    key = "in/" + fid
+    path = storage.path(key)
+    if storage.size(key) <= 0:
+        raise HTTPException(400, detail={"code": "missing_file",
+                                         "message": "预览帧已过期"})
+    kind = await asyncio.to_thread(_detect_compress_kind, path)
+    if kind not in ("jpg", "png"):
+        raise HTTPException(400, detail={"code": "wrong_type",
+                                         "message": "预览帧必须是 JPG 或 PNG"})
+    try:
+        frame = await asyncio.to_thread(scan_engine.document_frame, path)
+    except RuntimeError:
+        raise HTTPException(400, detail={"code": "bad_image",
+                                         "message": "无法读取预览帧"})
+    return frame
 
 
 @app.get("/api/v1/plans")
@@ -1190,6 +1224,21 @@ async def compress_page():
 async def word_page():
     # Kept so links issued before the tool grid existed keep working.
     return RedirectResponse("/convert/pdf-to-word", status_code=307)
+
+
+@app.get("/capture")
+async def capture_page():
+    """Mobile capture PWA: camera viewfinder -> photo -> the scan pipeline.
+
+    This is the capture half of a document scanner.  It is a static shell: the
+    camera, live document-frame overlay and shot review all run in the browser,
+    and finished shots are uploaded through the same scan tool the desktop page
+    uses.  Installable as a PWA on a phone (manifest + icon are served from
+    /static).
+    """
+    page = os.path.join(os.path.dirname(__file__), "static", "capture.html")
+    with open(page, encoding="utf-8") as f:
+        return HTMLResponse(f.read())
 
 
 @app.get("/tools")

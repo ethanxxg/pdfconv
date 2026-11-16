@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#18629f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>拍照扫描 — PDF 工具</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="manifest" href="/static/manifest.webmanifest">
+<link rel="stylesheet" href="/static/app.css">
+<style>
+  :root{--bar:#111a22}
+  body{margin:0;background:var(--bar);color:#fff;font-family:var(--font-sans)}
+  .wrap{max-width:520px;margin:0 auto;min-height:100vh;display:flex;flex-direction:column}
+  .caphead{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;
+           padding-top:calc(12px + env(safe-area-inset-top));background:#0c141b}
+  .caphead h1{font-size:15px;font-weight:500;margin:0}
+  .caphead .lnk{color:#9fc7ea;font-size:13px;text-decoration:none}
+
+  .modes{display:flex;gap:4px;padding:8px 12px;background:#0c141b;overflow-x:auto}
+  .modes button{flex:1;white-space:nowrap;border:0;border-radius:8px;padding:8px 12px;
+       background:#1a2732;color:#a9b8c4;font-size:13px;cursor:pointer}
+  .modes button.on{background:#18629f;color:#fff}
+
+  .stage{position:relative;width:100%;aspect-ratio:3/4;background:#000;overflow:hidden}
+  .stage video{width:100%;height:100%;object-fit:cover;transform:scaleX(var(--mirror,1))}
+  .stage canvas.frame{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+  .guide{position:absolute;inset:0;pointer-events:none;display:flex;align-items:center;
+         justify-content:center;opacity:.85}
+  .guide .box{width:76%;aspect-ratio:1/1.414;border:1.5px dashed rgba(255,255,255,.6);
+       border-radius:6px}
+  body[data-mode="idcard"] .guide .box{width:86%;aspect-ratio:1.586/1}
+  body[data-mode="book"] .guide .box{width:92%;aspect-ratio:1.414/1}
+  .hintbar{position:absolute;left:0;right:0;bottom:10px;text-align:center;font-size:12px;
+       color:#cfe2f2;text-shadow:0 1px 3px #000}
+
+  .controls{display:flex;align-items:center;justify-content:space-around;
+            padding:16px 12px;background:#0c141b}
+  .controls button{border:0;background:transparent;color:#cfe2f2;font-size:13px;cursor:pointer;
+       min-width:66px}
+  .shutter{width:68px;height:68px;border-radius:50%;background:#fff;
+       border:4px solid #18629f !important;box-shadow:0 0 0 2px #fff inset}
+  .shutter:active{transform:scale(.94)}
+
+  .strip{display:flex;gap:8px;overflow-x:auto;padding:10px 12px;background:#0c141b;min-height:78px}
+  .shot{position:relative;flex:0 0 auto;width:64px;height:80px;border-radius:6px;overflow:hidden;
+        border:2px solid transparent;cursor:pointer;background:#1a2732}
+  .shot.on{border-color:#5db1f5}
+  .shot img{width:100%;height:100%;object-fit:cover}
+  .shot .n{position:absolute;top:2px;left:3px;font-size:10px;background:rgba(0,0,0,.6);
+       padding:1px 4px;border-radius:4px}
+  .shot .x{position:absolute;top:1px;right:2px;font-size:14px;color:#fff;
+       background:rgba(0,0,0,.6);width:17px;height:17px;line-height:16px;text-align:center;border-radius:50%}
+
+  .sheet{background:var(--card);color:var(--text);border-radius:14px 14px 0 0;padding:16px;
+         margin-top:auto}
+  .sheet h2{font-size:14px;margin:0 0 10px;font-weight:600}
+  .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+  .fld{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--muted);flex:1;min-width:120px}
+  .fld select{height:36px;border:1px solid var(--line);border-radius:8px;background:var(--card);
+       color:var(--text);padding:0 8px;font-size:13px}
+  .toggles{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:10px;font-size:12.5px}
+  .toggles label{display:inline-flex;align-items:center;gap:5px;cursor:pointer}
+  .toggles input{accent-color:var(--brand)}
+  .done{width:100%;height:44px;border:0;border-radius:9px;background:var(--brand);color:#fff;
+        font-size:15px;margin-top:14px;cursor:pointer}
+  .done:disabled{background:#9fb8cc;cursor:not-allowed}
+  .status{font-size:12.5px;color:var(--muted);margin-top:8px;min-height:18px}
+
+  .result{display:none;background:var(--card);color:var(--text);border-radius:14px 14px 0 0;
+          padding:18px 16px;margin-top:auto}
+  .result.on{display:block}
+  .result .ttl{font-size:15px;font-weight:600;margin-bottom:10px}
+  .result .row2{display:flex;gap:10px;margin-top:14px}
+  .result a,.result button{flex:1;text-align:center;padding:11px;border-radius:9px;font-size:14px;
+       text-decoration:none;cursor:pointer}
+  .result .dl{background:var(--brand);color:#fff}
+  .result .edit{background:var(--card);color:var(--brand);border:1px solid var(--brand)}
+  .msg{font-size:12.5px;color:#ffb4a8;min-height:18px;margin-top:6px}
+  .errbox{position:absolute;inset:auto 0 0 0;background:#7a241c;color:#fff;padding:10px 14px;
+       font-size:13px;display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="caphead" id="caphead">
+    <h1>拍照扫描</h1>
+    <a class="lnk" href="/tools">全部工具</a>
+  </div>
+
+  <div class="modes" id="modes" data-mode="scan">
+    <button data-mode="scan" class="on">单页</button>
+    <button data-mode="multi">多页连拍</button>
+    <button data-mode="idcard">证件</button>
+    <button data-mode="book">书籍</button>
+  </div>
+
+  <div class="stage" id="stage">
+    <video id="video" autoplay playsinline muted></video>
+    <canvas class="frame" id="overlay"></canvas>
+    <div class="guide" id="guide"><div class="box"></div></div>
+    <div class="hintbar" id="hintbar">把纸张放进框内，保持稳定</div>
+    <div class="errbox" id="errbox"></div>
+  </div>
+
+  <div class="controls">
+    <button id="torch" hidden>闪光灯</button>
+    <button class="shutter" id="shutter" aria-label="拍摄"></button>
+    <button id="switchCam">翻转</button>
+  </div>
+
+  <div class="strip" id="strip"></div>
+
+  <div class="sheet" id="sheet">
+    <h2 id="sheetTitle">扫描设置</h2>
+    <div class="row">
+      <label class="fld">色彩
+        <select id="mode"><option value="color">彩色</option><option value="gray">灰度</option>
+          <option value="bw">黑白</option></select></label>
+      <label class="fld">清晰度
+        <select id="dpi"><option value="150">150 DPI</option><option value="200" selected>200 DPI</option>
+          <option value="300">300 DPI</option></select></label>
+    </div>
+    <div class="toggles" id="toggles">
+      <label><input type="checkbox" id="crop" checked> 自动裁边</label>
+      <label><input type="checkbox" id="deskew" checked> 拉正</label>
+      <label><input type="checkbox" id="flatten" checked> 去阴影</label>
+      <label><input type="checkbox" id="denoise" checked> 降噪</label>
+    </div>
+    <button class="done" id="done" disabled>完成后扫描</button>
+    <div class="status" id="status"></div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="result" id="result">
+    <div class="ttl">扫描完成<span id="rsum"></span></div>
+    <div class="status" id="rmeta"></div>
+    <div class="row2">
+      <a class="dl" id="rdl" href="#">下载 PDF</a>
+      <button class="edit" id="toEdit">继续编辑</button>
+    </div>
+    <div class="status">文件 15 分钟后自动删除，请及时下载。</div>
+  </div>
+</div>
+
+<script src="/static/nav.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const video = $("#video"), overlay = $("#overlay"), guide = $("#guide"),
+      stage = $("#stage"), strip = $("#strip"), modes = $("#modes"),
+      shutter = $("#shutter"), done = $("#done"), status = $("#status"),
+      msg = $("#msg"), errbox = $("#errbox"), hintbar = $("#hintbar");
+
+let stream = null, facing = "environment", shots = [], busy = false,
+    device = "", detecting = false, lastDetect = 0, cfg = { max_pages: 5, ttl: 900 };
+
+/* ---------- device fingerprint (same as the other pages) ---------- */
+async function fingerprint() {
+  const c = document.createElement("canvas"); c.width=220; c.height=40;
+  const x = c.getContext("2d"); x.textBaseline="top"; x.font="15px Arial";
+  x.fillStyle="#f60"; x.fillRect(0,0,110,22); x.fillStyle="#069";
+  x.fillText("pdfmerge-fp-\u{1F5C4}",2,4);
+  const raw=[c.toDataURL(),navigator.userAgent,
+    screen.width+"x"+screen.height+"x"+(screen.colorDepth||0),
+    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    (navigator.languages||[]).join(","), navigator.hardwareConcurrency||0].join("|");
+  const buf=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(raw));
+  return [...new Uint8Array(buf)].slice(0,16).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+/* ---------- camera ---------- */
+async function startCamera() {
+  stopCamera();
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio:false,
+      video:{facingMode:{ideal:facing}, width:{ideal:1920}, height:{ideal:2560}}
+    });
+    video.srcObject = stream;
+    await video.play();
+    $("#stage").style.setProperty("--mirror", facing === "user" ? -1 : 1);
+    const track = stream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    $("#torch").hidden = !caps.torch;
+    errbox.style.display = "none";
+    loopDetect();
+  } catch (e) {
+    err("无法打开摄像头：" + (e.message || e.name) +
+        "。请允许相机权限；部分浏览器要求 HTTPS 或 localhost。");
+  }
+}
+function stopCamera() {
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  detecting = false;
+}
+$("#switchCam").onclick = () => { facing = facing === "environment" ? "user" : "environment"; startCamera(); };
+$("#torch").onclick = async () => {
+  if (!stream) return;
+  const t = stream.getVideoTracks()[0];
+  try { await t.applyConstraints({advanced:[{torch: !t.getSettings().torch}]}); } catch(e){}
+};
+
+/* ---------- live document frame ---------- */
+async function uploadFrame(blob) {
+  const meta=[{name:"preview.jpg",size:blob.size}];
+  const r=await fetch("/api/v1/uploads",{method:"POST",
+    headers:{"Content-Type":"application/json","X-Device-Id":device},
+    body:JSON.stringify({files:meta})});
+  if(!r.ok) return null;
+  const up=(await r.json()).uploads[0];
+  const pr=await fetch(up.url,{method:"PUT",headers:{"Content-Type":"image/jpeg","X-Device-Id":device},body:blob});
+  if(!pr.ok) return null;
+  return up.file_id;
+}
+async function loopDetect() {
+  detecting = true;
+  while (detecting && stream) {
+    await new Promise(r=>setTimeout(r,420));
+    if (!detecting || !stream || document.hidden) continue;
+    const now=Date.now();
+    if (now-lastDetect < 500) continue;
+    lastDetect=now;
+    try {
+      const c=document.createElement("canvas");
+      c.width=360; c.height=Math.round(360*video.videoHeight/video.videoWidth||480);
+      c.getContext("2d").drawImage(video,0,0,c.width,c.height);
+      const blob=await new Promise(res=>c.toBlob(res,"image/jpeg",0.6));
+      if(!blob) continue;
+      const fid=await uploadFrame(blob);
+      if(!fid) continue;
+      const r=await fetch("/api/v1/capture/frame",{method:"POST",
+        headers:{"Content-Type":"application/json","X-Device-Id":device},
+        body:JSON.stringify({file_id:fid})});
+      if(!r.ok) continue;
+      const d=await r.json();
+      drawOverlay(d, c.width, c.height);
+    } catch(e){ /* preview is best-effort; never block capture */ }
+  }
+}
+function drawOverlay(d, cw, ch) {
+  const ctx=overlay.getContext("2d");
+  const dpr=window.devicePixelRatio||1;
+  overlay.width=stage.clientWidth*dpr; overlay.height=stage.clientHeight*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,stage.clientWidth,stage.clientHeight);
+  if(!d.quad) return;
+  // preview frame coords -> stage coords (object-fit: cover)
+  const sx=stage.clientWidth/cw, sy=stage.clientHeight/ch;
+  const pts=d.quad.map(p=>[p[0]*sx,p[1]*sy]);
+  ctx.strokeStyle="#5db1f5"; ctx.lineWidth=2.5; ctx.setLineDash([]);
+  ctx.beginPath(); pts.forEach((p,i)=> i?ctx.lineTo(...p):ctx.moveTo(...p)); ctx.closePath(); ctx.stroke();
+  ctx.fillStyle="rgba(93,177,245,.12)"; ctx.fill();
+  hintbar.textContent = d.area>0.25 ? "已检测到纸张，点击拍摄" : "把纸张放进框内，靠近一些";
+}
+
+/* ---------- capture ---------- */
+function mode(){ return modes.dataset.mode; }
+function maxShots(){ return mode()==="idcard" ? 2 : (mode()==="scan" ? 1 : 20); }
+shutter.onclick = () => {
+  if (busy || !stream) return;
+  if (shots.length >= maxShots()) {
+    msg.textContent = mode()==="scan" ? "单页模式只能拍一张" : "已达到数量上限";
+    return;
+  }
+  const c=document.createElement("canvas");
+  c.width=video.videoWidth; c.height=video.videoHeight;
+  const ctx=c.getContext("2d");
+  if(facing==="user"){ ctx.translate(c.width,0); ctx.scale(-1,1); }
+  ctx.drawImage(video,0,0);
+  c.toBlob(b=>{ if(b) addShot(b); },"image/jpeg",0.9);
+};
+function addShot(blob) {
+  const url=URL.createObjectURL(blob);
+  shots.push({blob,url,name:"shot-"+(shots.length+1)+".jpg"});
+  renderStrip();
+}
+function renderStrip() {
+  strip.innerHTML="";
+  shots.forEach((s,i)=>{
+    const d=document.createElement("div");
+    d.className="shot"+(i===shots.length-1?" on":"");
+    d.innerHTML=`<img src="${s.url}" alt=""><span class="n">${i+1}</span><span class="x">×</span>`;
+    d.querySelector(".x").onclick=ev=>{ev.stopPropagation();URL.revokeObjectURL(s.url);shots.splice(i,1);renderStrip();};
+    strip.appendChild(d);
+  });
+  const need=mode()==="idcard"?2:1;
+  done.disabled=busy||shots.length<need;
+  $("#sheetTitle").textContent = mode()==="idcard" ? "证件扫描（正反面）" : "扫描设置";
+  status.textContent = shots.length
+    ? `已拍 ${shots.length} 张${mode()==="idcard"?(shots.length<2?"，请再拍背面":"（正面 + 背面）"):""}`
+    : "尚未拍摄";
+}
+modes.querySelectorAll("button").forEach(b=>b.onclick=()=>{
+  modes.querySelectorAll("button").forEach(x=>x.classList.remove("on"));
+  b.classList.add("on"); modes.dataset.mode=b.dataset.mode;
+  document.body.dataset.mode=b.dataset.mode;
+  shots.forEach(s=>URL.revokeObjectURL(s.url)); shots=[];
+  renderStrip();
+  $("#result").classList.remove("on");
+});
+
+/* ---------- submit ---------- */
+done.onclick = async () => {
+  if (busy || shots.length < (mode()==="idcard"?2:1)) return;
+  busy=true; done.disabled=true; status.textContent="正在上传…"; msg.textContent="";
+  try {
+    const meta=shots.map(s=>({name:s.name,size:s.blob.size}));
+    const r=await fetch("/api/v1/uploads",{method:"POST",
+      headers:{"Content-Type":"application/json","X-Device-Id":device},
+      body:JSON.stringify({files:meta})});
+    if(!r.ok) throw await apiErr(r);
+    const ups=(await r.json()).uploads;
+    for(let i=0;i<ups.length;i++){
+      const pr=await fetch(ups[i].url,{method:"PUT",
+        headers:{"Content-Type":"image/jpeg","X-Device-Id":device},body:shots[i].blob});
+      if(!pr.ok) throw await apiErr(pr);
+      status.textContent=`正在上传… ${i+1}/${ups.length}`;
+    }
+    status.textContent="正在生成扫描件…";
+    const opts = mode()==="idcard"
+      ? {op:"idcard",mode:$("#mode").value,dpi:+$("#dpi").value,fmt:"pdf",name:"idcard"}
+      : {op:"scan",mode:$("#mode").value,dpi:+$("#dpi").value,fmt:"pdf",
+         crop:$("#crop").checked,deskew:$("#deskew").checked,
+         flatten:$("#flatten").checked,denoise:$("#denoise").checked,name:"capture"};
+    const jr=await fetch("/api/v1/jobs",{method:"POST",
+      headers:{"Content-Type":"application/json","X-Device-Id":device},
+      body:JSON.stringify({task:"scan",files:ups.map(u=>({file_id:u.file_id})),options:opts})});
+    if(!jr.ok) throw await apiErr(jr);
+    const job=await jr.json();
+    const st=await poll(job.job_id);
+    showResult(st);
+  } catch(e){ msg.textContent=e.message||"出错了，请重试"; }
+  finally{ busy=false; renderStrip(); }
+};
+async function poll(jid){
+  for(let i=0;i<900;i++){
+    await new Promise(r=>setTimeout(r,400));
+    const r=await fetch("/api/v1/jobs/"+jid);
+    if(!r.ok) throw await apiErr(r);
+    const j=await r.json();
+    if(j.status==="done") return j;
+    if(j.status==="failed") throw new Error((j.error&&j.error.message)||"扫描失败");
+    status.textContent=j.status==="queued"?"排队中…":"正在生成扫描件…";
+  }
+  throw new Error("等待超时");
+}
+var lastResult=null;
+function showResult(j){
+  lastResult=j;
+  $("#rsum").textContent=` · ${j.pages||0} 页`;
+  $("#rmeta").textContent=`${(j.result||{}).images||shots.length} 张照片 · ${(j.result||{}).mode||"color"} · ${(j.result||{}).dpi||200} DPI`;
+  $("#rdl").href=j.download;
+  $("#result").classList.add("on");
+  $("#result").scrollIntoView({behavior:"smooth"});
+}
+$("#toEdit").onclick=async()=>{
+  if(!lastResult) return;
+  status.textContent="正在把扫描件送入编辑器…";
+  try{
+    const r=await fetch(lastResult.download);
+    const blob=await r.blob();
+    const meta=[{name:"scanned.pdf",size:blob.size}];
+    const u=await (await fetch("/api/v1/uploads",{method:"POST",
+      headers:{"Content-Type":"application/json","X-Device-Id":device},
+      body:JSON.stringify({files:meta})})).json();
+    const up=u.uploads[0];
+    await fetch(up.url,{method:"PUT",headers:{"Content-Type":"application/pdf","X-Device-Id":device},body:blob});
+    location.href="/edit";
+  }catch(e){ msg.textContent="送入编辑器失败："+e.message; }
+};
+
+async function apiErr(r){
+  let d={};try{d=(await r.json()).detail||{};}catch(e){}
+  return new Error(d.message||`请求失败 (${r.status})`);
+}
+function err(t){ errbox.textContent=t; errbox.style.display="block"; }
+
+/* ---------- boot ---------- */
+(async()=>{
+  document.body.dataset.mode = "scan";
+  device=await fingerprint();
+  try{
+    const r=await fetch("/api/v1/config",{headers:{"X-Device-Id":device}});
+    if(r.ok){cfg=await r.json();}
+  }catch(e){}
+  renderStrip();
+  if(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia) startCamera();
+  else err("此浏览器不支持摄像头；请用最新版 Chrome / Edge / Safari。");
+  document.addEventListener("visibilitychange",()=>{ if(document.hidden) stopCamera(); else startCamera(); });
+})();
+</script>
+</body>
+</html>

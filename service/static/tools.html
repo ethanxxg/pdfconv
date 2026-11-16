@@ -36,6 +36,13 @@
   .pro{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:5px;
        font-size:10.5px;font-weight:600;letter-spacing:.3px;vertical-align:1px;
        background:#fdf1df;color:#8a5a00;border:1px solid #f0dcbb}
+  .capture-cta{display:flex;align-items:center;gap:14px;margin-top:18px;padding:14px 18px;
+       background:linear-gradient(100deg,#18629f,#2b7fc4);color:#fff;border-radius:12px;
+       text-decoration:none}
+  .capture-cta .ico{font-size:26px;line-height:1}
+  .capture-cta b{font-size:14px;display:block}
+  .capture-cta small{font-size:12px;opacity:.9;display:block;margin-top:2px}
+  .capture-cta .arrow{margin-left:auto;font-size:20px}
 </style>
 </head>
 <body>
@@ -43,6 +50,11 @@
   <nav class="nav" id="nav"></nav>
   <h1>全部工具</h1>
   <p class="sub">二十四个工具，共用同一套上传、限额与自动删除。无需登录。</p>
+  <a class="capture-cta" href="/capture">
+    <span class="ico">▣</span>
+    <span><b>手机拍照扫描</b><small>打开摄像头，自动裁边拉正，证件/多页/书籍 —— 可添加到主屏幕当 App 用</small></span>
+    <span class="arrow">→</span>
+  </a>
   <div id="groups"></div>
   <div class="foot">
     文件仅用于本次处理，到期自动删除。<br>

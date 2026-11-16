@@ -206,6 +206,28 @@ def enhance(img, options=None):
     return out
 
 
+def document_frame(path):
+    """Detect a document in a photo for the camera viewfinder overlay.
+
+    Returns {"quad": [[x, y], ...], "area": 0..1} with points in the source
+    image's pixel coordinates, or {"quad": None, "area": 0} when no confident
+    sheet was found.  Uses the same detector as the scan path so what the user
+    sees framed in the viewfinder is what the scanner will actually crop.
+    """
+    _need()
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise RuntimeError("bad_image")
+    small, scale = _detect_copy(img)
+    quad = _paper_quad(small)
+    if quad is None:
+        return {"quad": None, "area": 0.0}
+    pts = _order(quad) / scale
+    area = float(abs(cv2.contourArea(quad))) / float(small.shape[0] * small.shape[1])
+    return {"quad": [[round(float(x), 1), round(float(y), 1)] for x, y in pts],
+            "area": round(area, 3)}
+
+
 def _card_quad(img):
     """Largest four-point contour with an ID-card-like aspect ratio, or None.
 

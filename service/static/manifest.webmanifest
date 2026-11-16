@@ -1,0 +1,15 @@
+{
+  "name": "拍照扫描 — PDF 工具",
+  "short_name": "拍照扫描",
+  "description": "手机拍照生成高清扫描件，自动裁边拉正去阴影，支持证件与多页。",
+  "start_url": "/capture",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0c141b",
+  "theme_color": "#18629f",
+  "lang": "zh-CN",
+  "icons": [
+    {"src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
