@@ -1,6 +1,6 @@
-# pdfkit —— 在线 PDF 工具（23 个工具）
+# pdfkit —— 在线 PDF 工具（24 个工具）
 
-二十三个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
+二十四个工具共用一套上传、任务队列、限额与下载链路。工具清单只写在
 `service/tools.py` 一张表里，页面、导航、路由、校验全部从它派生——加一个工具
 是加一行，不是再抄一份页面。其中六个结构化编辑工具是 **Pro 专属**，免费版在
 API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
@@ -23,6 +23,7 @@ API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
 | 图片转 PDF | `/media/image-to-pdf` | 多张 JPG/PNG → 一个 PDF |
 | 拍照扫描 | `/media/scan` | 照片 → 自动裁边/拉正/去阴影/锐化的高清扫描件（PDF 或 ZIP） |
 | 证件扫描 | `/media/idcard` | 身份证正反面 → 一页 A4 的标准尺寸扫描件 |
+| 图片转文字 | `/media/image-to-text` | OCR 识别照片文字 → TXT / Word |
 | 转换 PDF/A | `/pdfa` | PDF → PDF/A-2b 或 3b（长期归档） |
 | 六个编辑工具（合一个页面） | `/edit` | 左侧操作侧栏：加水印 / 脱敏 / 批注 / 盖章 / 填表 / 改写，上传一次即可切换（均 Pro） |
 | └ 加水印 / 页码 | `/edit?op=watermark` | 文字水印 / 平铺水印 / 页眉页脚 |
@@ -45,6 +46,7 @@ service/
   pages.py         页面工具任务体：拆分/提取/删除/旋转（进程池内运行）
   media.py         图片工具任务体：PDF 转图片 / 图片转 PDF（进程池内运行）
   scan.py          拍照扫描 / 证件扫描任务体（进程池内运行）
+  ocr_text.py      独立图片转文字任务体（进程池内运行）
   pdfa.py          PDF/A 归档任务体（进程池内运行）
   edit.py          六个结构化编辑任务体 + 表单字段发现（进程池内运行）
   jobs.py          任务状态机 + 有界队列 + 进程池
@@ -497,7 +499,7 @@ pdfkit
   note  : binding 0.0.0.0 exposes this to your network; there is no login by design
   merge : http://127.0.0.1:8090/
   compress: http://127.0.0.1:8090/compress
-  convert : http://127.0.0.1:8090/tools  (23 个工具 / 6 个转换方向)
+  convert : http://127.0.0.1:8090/tools  (24 个工具 / 6 个转换方向)
   workers: 7 PDF processes, 1 web process
   data   : C:\...\service\data
 ```

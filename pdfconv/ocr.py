@@ -406,24 +406,18 @@ def page_words(page, body, font_hint=None, dpi=_DPI):
     return out
 
 
-def _run(page, eng, dpi):
-    """Render + OCR one page -> ([(x0, y0, x1, y1, text, conf), ...], img)
-    with the rotated watermark boxes already dropped; the rendered image
-    comes back too so ink colours can be sampled without a re-render."""
-    import numpy as np
-    pix = page.get_pixmap(dpi=dpi)
-    img = np.frombuffer(pix.samples, dtype=np.uint8)
-    img = img.reshape(pix.height, pix.width, pix.n)
-    if pix.n >= 3:
-        img = img[:, :, :3]
-    else:
-        img = np.repeat(img[:, :, :1], 3, axis=2)
+def _run_array(img, eng):
+    """OCR a BGR/RGB numpy image -> (kept boxes, img).
+
+    Shared by the scanned-PDF path and the standalone image-to-text tool so
+    both get the same rotated-watermark filter and confidence handling.
+    """
     try:
         res, _elapse = eng(img)
     except Exception:
-        return None
+        return None, img
     if not res:
-        return None
+        return None, img
     # drop rotated boxes: the watermark runs diagonally across every page,
     # while real text is horizontal.  Ink darkness cannot separate them --
     # part of the watermark is darker than a light heading.
@@ -442,3 +436,55 @@ def _run(page, eng, dpi):
             score = 0.0
         kept.append((min(xs), min(ys), max(xs), max(ys), text, score))
     return (kept or None), img
+
+
+def image_text(path, dpi=200):
+    """OCR one image file into plain text lines.
+
+    Returns {"text": str, "lines": int, "boxes": int}.  Uses the same engine,
+    watermark filter and row grouping as the scanned-PDF path; reading order is
+    top-to-bottom, left-to-right within each visual row.  No OCR engine -> an
+    empty text with boxes=0, which the caller reports as a clean failure.
+    """
+    import cv2
+    eng = _engine()
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is None:
+        raise RuntimeError("bad_image")
+    if eng is None:
+        return {"text": "", "lines": 0, "boxes": 0}
+    kept, _ = _run_array(img, eng)
+    if not kept:
+        return {"text": "", "lines": 0, "boxes": 0}
+    # Upscale once on low confidence, same policy as page_words.
+    confs = [b[5] for b in kept]
+    if confs and sum(confs) / len(confs) < 0.72 and dpi < 400:
+        big = cv2.resize(img, None, fx=1.5, fy=1.5,
+                         interpolation=cv2.INTER_CUBIC)
+        alt, _ = _run_array(big, eng)
+        if alt and sum(len(b[4]) for b in alt) > sum(len(b[4]) for b in kept):
+            kept = alt
+    blocks = _row_blocks(kept)
+    rows = {}
+    for i, b in enumerate(kept):
+        rows.setdefault(blocks[i], []).append(b)
+    lines = []
+    for blk in sorted(rows):
+        cells = sorted(rows[blk], key=lambda b: b[0])
+        lines.append(" ".join(c[4] for c in cells))
+    return {"text": "\n".join(lines), "lines": len(lines), "boxes": len(kept)}
+
+
+def _run(page, eng, dpi):
+    """Render + OCR one page -> ([(x0, y0, x1, y1, text, conf), ...], img)
+    with the rotated watermark boxes already dropped; the rendered image
+    comes back too so ink colours can be sampled without a re-render."""
+    import numpy as np
+    pix = page.get_pixmap(dpi=dpi)
+    img = np.frombuffer(pix.samples, dtype=np.uint8)
+    img = img.reshape(pix.height, pix.width, pix.n)
+    if pix.n >= 3:
+        img = img[:, :, :3]
+    else:
+        img = np.repeat(img[:, :, :1], 3, axis=2)
+    return _run_array(img, eng)

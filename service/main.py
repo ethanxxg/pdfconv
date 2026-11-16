@@ -647,7 +647,7 @@ async def create_job(request: Request):
     body = await request.json()
     task = str(body.get("task") or "merge").strip().lower()
     if task not in ("merge", "compress", "convert", "pages", "media", "pdfa",
-                    "scan", "edit"):
+                    "scan", "ocr", "edit"):
         raise HTTPException(400, detail={"code": "bad_task",
                                          "message": "不支持的任务类型"})
 
@@ -734,6 +734,10 @@ async def create_job(request: Request):
             raise HTTPException(400, detail={
                 "code": "wrong_file_count",
                 "message": "证件扫描最多 2 张（正面和背面）"})
+    elif task == "ocr":
+        if not raw:
+            raise HTTPException(400, detail={
+                "code": "no_files", "message": "没有选择图片"})
     elif len(raw) != 1:
         # Batch compression is the paid hook: the free tier does one file, and
         # saying so is better than silently compressing only the first one.
@@ -916,6 +920,16 @@ async def create_job(request: Request):
         }
         opts["fmt"] = fmt
         opts["name"] = _safe_stem(o.get("name"))
+    elif task == "ocr":
+        o = body.get("options") or {}
+        fmt = str(o.get("fmt") or "txt").lower()
+        if fmt not in ("txt", "docx"):
+            raise HTTPException(400, detail={
+                "code": "bad_fmt", "message": "输出格式只能是 TXT 或 Word"})
+        opts["options"] = {"fmt": fmt}
+        opts["fmt"] = fmt
+        opts["multi"] = len(fids) > 1
+        opts["name"] = _safe_stem(o.get("name"))
     elif task == "edit":
         o = body.get("options") or {}
         op = str(o.get("op") or "").strip().lower()
@@ -998,7 +1012,7 @@ async def create_job(request: Request):
                         "message": "第 %d 个文件不是 JPG 或 PNG 图片"
                                    % (i + 1)})
 
-    if task == "scan":
+    if task in ("scan", "ocr"):
         for i, k in enumerate(keys):
             ik = await asyncio.to_thread(_detect_compress_kind, storage.path(k))
             if ik not in ("jpg", "png"):
@@ -1040,7 +1054,7 @@ async def create_job(request: Request):
                 "message": "共 %d 张图片，%s最多 %d 页"
                            % (len(keys), plan["name"], plan["max_pages"])})
 
-    if task == "scan" and len(keys) > plan["max_pages"]:
+    if task in ("scan", "ocr") and len(keys) > plan["max_pages"]:
         raise HTTPException(400, detail={
             "code": "too_many_pages",
             "message": "共 %d 张图片，%s最多 %d 页"
@@ -1119,23 +1133,26 @@ async def signed_download(key: str, exp: str = "", sig: str = ""):
     ext = os.path.splitext(key)[1].lower()
     kind = {".docx": "docx", ".xlsx": "xlsx", ".pptx": "pptx",
             ".jpg": "jpg", ".jpeg": "jpg", ".png": "png",
-            ".zip": "zip"}.get(ext, "pdf")
+            ".zip": "zip", ".txt": "txt"}.get(ext, "pdf")
     media = tool_registry.MIME.get(kind, "application/pdf")
     job = store.get(os.path.splitext(os.path.basename(key))[0])
     stem = ((job.opts or {}).get("name") if job else None)
     if job is not None and job.kind in ("convert", "compress", "pages",
-                                        "media", "pdfa", "scan", "edit"):
+                                        "media", "pdfa", "scan", "ocr",
+                                        "edit"):
         op = (job.opts or {}).get("op")
         zipped = ((job.kind == "pages" and op == "split")
                   or (job.kind == "media" and op == "pdf2img")
                   or (job.kind == "scan"
-                      and (job.opts or {}).get("fmt") == "images"))
+                      and (job.opts or {}).get("fmt") == "images")
+                  or (job.kind == "ocr" and (job.opts or {}).get("multi")))
         if zipped:
             name = (stem or "output") + ".zip"
         else:
             default = {"convert": "converted", "compress": "compressed",
                        "pages": "pages", "media": "images", "pdfa": "archive",
-                       "scan": "scanned", "edit": "edited"}[job.kind]
+                       "scan": "scanned", "ocr": "recognized",
+                       "edit": "edited"}[job.kind]
             name = (stem or default) + ext
     elif key.startswith("out/"):
         name = "merged.pdf"
@@ -1273,12 +1290,13 @@ async def media_page(tool_id: str):
     """
     tool = tool_registry.get(tool_id)
     if tool is None or tool.get("op") not in ("pdf2img", "img2pdf", "scan",
-                                             "idcard"):
+                                             "idcard", "image-to-text"):
         raise HTTPException(404, detail={"code": "no_such_tool",
                                          "message": "没有这个工具"})
     op = tool["op"]
     tpl = {"pdf2img": "pdf2image.html", "img2pdf": "image2pdf.html",
-           "scan": "scan.html", "idcard": "idcard.html"}[op]
+           "scan": "scan.html", "idcard": "idcard.html",
+           "image-to-text": "imgtotext.html"}[op]
     payload = {
         "id": tool["id"], "title": tool["title"], "sub": tool["sub"],
         "op": op, "dst": tool["dst"],

@@ -116,11 +116,11 @@ print("   %d tools: %s" % (len(ids), ", ".join(ids)))
 CORE = {"merge", "compress", "pdf-to-word", "pdf-to-excel",
         "pdf-to-ppt", "word-to-pdf", "excel-to-pdf", "ppt-to-pdf"}
 PAGE = {"split", "extract", "delete", "rotate"}
-MEDIA = {"pdf-to-image", "image-to-pdf", "scan", "idcard"}
+MEDIA = {"pdf-to-image", "image-to-pdf", "scan", "idcard", "image-to-text"}
 ARCHIVE = {"pdfa"}
 EDIT = {"watermark", "redact", "annotate", "stamp", "form", "rewrite"}
 assert set(ids) == CORE | PAGE | MEDIA | ARCHIVE | EDIT, ids
-assert len(ids) == 23, ids
+assert len(ids) == 24, ids
 cfg = req("GET", "/api/v1/config")
 assert [t["id"] for t in cfg["tools"]] == ids, "config and /tools disagree"
 

@@ -31,9 +31,11 @@ MIME = {
     "jpeg": "image/jpeg",
     "png": "image/png",
     "zip": "application/zip",
+    "txt": "text/plain; charset=utf-8",
 }
 
-EXT = {"pdf": ".pdf", "docx": ".docx", "xlsx": ".xlsx", "pptx": ".pptx"}
+EXT = {"pdf": ".pdf", "docx": ".docx", "xlsx": ".xlsx", "pptx": ".pptx",
+       "txt": ".txt"}
 
 TOOLS = {
     "merge": {
@@ -108,6 +110,15 @@ TOOLS = {
         "sub": "身份证正反面自动识别、拉正成一比一标准尺寸，排版到一页 A4，可直接打印。",
         "icon": "image", "op": "idcard", "action": "开始扫描",
         "result": "下载证件扫描件", "accept": [".jpg", ".jpeg", ".png"],
+        "mime": "image/jpeg",
+    },
+    "image-to-text": {
+        "id": "image-to-text", "label": "图片转文字",
+        "path": "/media/image-to-text",
+        "title": "图片转文字", "src": "image", "dst": "txt",
+        "sub": "OCR 识别照片上的文字，导出可编辑的 TXT 或 Word；多张图片分别识别。",
+        "icon": "image", "op": "image-to-text", "action": "开始识别",
+        "result": "下载文字", "accept": [".jpg", ".jpeg", ".png"],
         "mime": "image/jpeg",
     },
     "pdfa": {
@@ -228,7 +239,7 @@ ORDER = ["pdf-to-word", "pdf-to-excel", "pdf-to-ppt",
          "word-to-pdf", "excel-to-pdf", "ppt-to-pdf",
          "merge", "compress",
          "split", "extract", "delete", "rotate",
-         "pdf-to-image", "image-to-pdf", "scan", "idcard", "pdfa",
+         "pdf-to-image", "image-to-pdf", "scan", "idcard", "image-to-text", "pdfa",
          "watermark", "redact", "annotate", "stamp", "form", "rewrite"]
 
 # The six structured-edit operations share one /edit template.  Keeping the

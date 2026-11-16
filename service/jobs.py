@@ -21,6 +21,7 @@ from .media import (pdf_to_images_task, images_to_pdf_task, MediaError)
 from .pages import pages_task, PagesError
 from .pdfa import pdfa_task, PdfaError
 from .scan import scan_task, ScanError
+from .ocr_text import ocr_text_task, OcrTextError
 
 
 class Job:
@@ -62,6 +63,11 @@ class Job:
             # Scans are PDFs by default; the "images" format returns a zip of
             # the cleaned pictures instead.
             ext = ".zip" if (opts or {}).get("fmt") == "images" else ".pdf"
+        elif kind == "ocr":
+            # One image -> .txt; several -> .zip; Word output -> .docx.
+            fmt = (opts or {}).get("fmt") or "txt"
+            ext = (".docx" if fmt == "docx"
+                   else ".zip" if (opts or {}).get("multi") else ".txt")
         self.out_key = "out/%s%s" % (jid, ext)
         self.file_keys = file_keys
         self.rotations = rotations or [0] * len(file_keys)
@@ -180,6 +186,10 @@ class Runner:
                     fut = self.pool.submit(scan_task, paths, out_path,
                                            opts.get("options"),
                                            opts.get("max_pages"))
+                elif job.kind == "ocr":
+                    fut = self.pool.submit(ocr_text_task, paths, out_path,
+                                           opts.get("options"),
+                                           opts.get("max_pages"))
                 elif job.kind == "edit":
                     # The whole path list travels: stamp needs a second upload
                     # (the seal image), the other five ops ignore paths[1:].
@@ -214,7 +224,8 @@ class Runner:
                 job.pages = int(res or 0)
             job.status = "done"
         except (MergeError, CompressError, ConvertError, PagesError,
-                MediaError, PdfaError, EditError, ScanError) as e:
+                MediaError, PdfaError, EditError, ScanError,
+                OcrTextError) as e:
             job.status = "failed"
             job.error = {"code": e.code, "message": e.message}
         except SystemExit as e:
