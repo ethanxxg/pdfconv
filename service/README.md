@@ -21,7 +21,7 @@ API 入口就会被挡下（见「PDF 结构化编辑的边界」）。
 | 旋转页面 | `/pages/rotate` | 旋转全部/指定页 → 一个 PDF |
 | PDF 转图片 | `/media/pdf-to-image` | PDF → 每页一张 PNG/JPG（zip） |
 | 图片转 PDF | `/media/image-to-pdf` | 多张 JPG/PNG → 一个 PDF |
-| 拍照扫描 | `/media/scan` | 照片 → 自动裁边/拉正/去阴影/锐化的高清扫描件（PDF 或 ZIP） |
+| 拍照扫描 | `/media/scan` | 照片 → 自动裁边/拉正/去阴影/锐化的高清扫描件（PDF 或 ZIP），可选 AI 去手指/去摩尔纹/去背面透字 |
 | 证件扫描 | `/media/idcard` | 身份证正反面 → 一页 A4 的标准尺寸扫描件 |
 | 图片转文字 | `/media/image-to-text` | OCR 识别照片文字 → TXT / Word |
 | 转换 PDF/A | `/pdfa` | PDF → PDF/A-2b 或 3b（长期归档） |
@@ -55,11 +55,12 @@ service/
   static/index.html 合并页（pdf.js 客户端生成缩略图）
   static/edit.html 六个编辑工具共用的单页编辑器（左侧操作侧栏切换，上传一次 PDF 即可切到任意操作）
   static/capture.html 手机拍摄端 PWA：摄像头取景 + 纸张框 + 四种拍摄模式
-  static/scan.html 拍照扫描页：输出格式/色彩/清晰度 + 五个增强开关
+  static/scan.html 拍照扫描页：输出格式/色彩/清晰度 + 五个常规增强 + 三个可选 AI 修复开关
   static/idcard.html 证件扫描页：正反面两个上传槽 + 色彩/清晰度
   test_e2e.py      端到端测试（10 项断言）
   test_edit.py     编辑工具端到端测试（13 项，含 Pro 门槛）
-  test_scan.py     拍照/证件扫描端到端测试（13 项）
+  test_scan.py     拍照/证件扫描端到端测试（14 项）
+  test_scan_ai.py  AI 去手指/去摩尔纹/去透字引擎测试（4 项）
   test_capture.py  拍摄端 PWA 与实时纸张框检测（6 项）
   shot_capture.py  拍摄端浏览器流程（假摄像头，6 项）
   test_ocr_text.py 独立图片转文字端到端测试（8 项）
@@ -339,8 +340,9 @@ python -m service.cli run scan -i a.jpg -i b.jpg \
 - 结果页有「继续编辑」：把扫描产物重新上传后跳 `/edit`，拍 → 扫 → 编辑一条线打通。
 - 浏览器要求相机权限，且 `getUserMedia` 只在 HTTPS 或 localhost 下可用；PWA 的
   `manifest.webmanifest` 与 `icon.svg` 从 `/static/` 提供。
-- 这里**没有**做连续自动拍摄、书籍曲面展平、去手指/摩尔纹/背面透字——那些是
-  拍摄端的下一批 AI 能力。
+- 这里**没有**做连续自动拍摄与书籍曲面展平——那些是拍摄端的下一批能力。
+  去手指 / 去摩尔纹 / 去背面透字已经作为**默认关闭**的 AI 开关加入扫描管线，
+  拍摄端设置区也能勾选。
 
 ### 拍照扫描的边界
 
@@ -350,6 +352,12 @@ python -m service.cli run scan -i a.jpg -i b.jpg \
 滤波降噪、CLAHE 之外的锐化与三种色彩模式。管线每一级都是**防御式**的：找不到
 纸张就跳过裁边，检测不到倾斜就不旋转——误裁比不裁更糟。
 
+- 三个 AI 修复（`definger` / `demoire` / `debleed`）**默认关闭**，只有明确勾选才
+  执行。去手指用 YCrCb 肤色候选 + 触边约束 + 连通域面积过滤后 inpaint；去摩尔纹
+  在频域只陷波少数远高于局部背景的尖峰；去透字把「纸张白与真墨之间」的浅色笔画
+  拉回纸白。三者都先判定「正常页面直接原样返回」，避免误伤正文。
+- 去摩尔纹与去透字都逐通道处理，彩色原件不会被悄悄转灰；`DFT_SCALE` 不可省，
+  否则逆变换放大 N 倍再截断会变成椒盐噪声（实测踩过）。
 - 裁边找的是「亮纸 + 暗背景」；若纸张与桌面颜色接近，应手动关掉自动裁边。
 - 去阴影把模糊背景映射到固定白点（约 245），不是图像均值：裁完的纸本来就亮，
   用均值会把整页压灰。这道坑在实测里发现并修过。

@@ -157,7 +157,8 @@ print("   ", st["result"])
 print("5. all enhancement stages off -> still a valid PDF")
 fid = upload(photo1)
 st = run_scan([fid], {"crop": False, "deskew": False, "flatten": False,
-                      "denoise": False, "sharpen": False})
+                      "denoise": False, "sharpen": False,
+                      "definger": False, "demoire": False, "debleed": False})
 blob, _ = download(st)
 d = fitz.open(stream=blob, filetype="pdf")
 assert d.page_count == 1, d.page_count
@@ -195,7 +196,8 @@ print("8. the /media/scan page renders with its controls")
 with urllib.request.urlopen(BASE + "/media/scan") as r:
     html = r.read().decode("utf-8")
 assert r.status == 200 and "拍照扫描" in html, r.status
-for token in ("自动裁边", "拉正矫正", "去除阴影", "黑白", "dpi"):
+for token in ("自动裁边", "拉正矫正", "去除阴影", "黑白", "dpi",
+              "AI 去手指", "AI 去摩尔纹", "AI 去背面透字"):
     assert token in html, token
 print("   scan page rendered")
 
@@ -264,6 +266,15 @@ with urllib.request.urlopen(BASE + "/media/idcard") as r:
 assert r.status == 200 and "证件正面" in html and "证件背面" in html, r.status
 assert "idcard" in html
 print("   idcard page rendered")
+
+print("14. AI capture fixes are accepted as string or boolean flags")
+fid = upload(photo1)
+st = run_scan([fid], {"definger": "true", "demoire": "false", "debleed": 0})
+blob, _ = download(st)
+d = fitz.open(stream=blob, filetype="pdf")
+assert d.page_count == 1, d.page_count
+d.close()
+print("   ", st["result"])
 
 req("GET", "/media/nope", expect=404)
 print("\nALL OK")

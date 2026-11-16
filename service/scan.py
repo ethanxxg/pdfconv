@@ -69,6 +69,12 @@ def _options(opts):
             v = True
         clean[key] = v if isinstance(v, bool) else str(v).lower() not in (
             "false", "0", "no", "off")
+    # AI capture fixes are opt-in: an aggressive finger or moire pass can eat
+    # real content, so absence means "off" rather than "on" here.
+    for key in ("definger", "demoire", "debleed"):
+        v = o.get(key, False)
+        clean[key] = v if isinstance(v, bool) else str(v).lower() not in (
+            "false", "0", "no", "off")
     clean["mode"] = mode
     clean["op"] = op
     return clean, dpi, fmt

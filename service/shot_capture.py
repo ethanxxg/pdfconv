@@ -64,6 +64,12 @@ with sync_playwright() as pw:
     assert vw > 0 and vh > 0, (vw, vh)
     print("   video %dx%d, 4 modes" % (vw, vh))
 
+    print("1b. AI cleanup is present but opt-in")
+    for sel in ("#definger", "#demoire", "#debleed"):
+        assert pg.locator(sel).count() == 1, sel
+        assert not pg.is_checked(sel), sel
+    print("   three AI toggles off by default")
+
     print("2. single-page shutter captures one shot")
     pg.click("#shutter")
     assert wait_shots(pg, 1), shots(pg)

@@ -89,7 +89,12 @@
       <label><input type="checkbox" id="denoise" checked> 降噪</label>
       <label><input type="checkbox" id="sharpen" checked> 锐化增强</label>
     </div>
-    <div class="tip">自动裁边会识别纸张四角并拉正；若照片背景与纸张颜色接近，可关掉裁边避免误裁。</div>
+    <div class="toggles">
+      <label><input type="checkbox" id="definger"> AI 去手指</label>
+      <label><input type="checkbox" id="demoire"> AI 去摩尔纹</label>
+      <label><input type="checkbox" id="debleed"> AI 去背面透字</label>
+    </div>
+    <div class="tip">自动裁边会识别纸张四角并拉正；若照片背景与纸张颜色接近，可关掉裁边避免误裁。AI 修复默认关闭，只在拍屏、手指挡字或背面透字明显时勾选，避免误伤正文。</div>
   </div>
 
   <div class="bar">
@@ -290,6 +295,8 @@ go.onclick = async () => {
           crop: $("#crop").checked, deskew: $("#deskew").checked,
           flatten: $("#flatten").checked, denoise: $("#denoise").checked,
           sharpen: $("#sharpen").checked,
+          definger: $("#definger").checked, demoire: $("#demoire").checked,
+          debleed: $("#debleed").checked,
           name: files[0].file.name
         }
       })

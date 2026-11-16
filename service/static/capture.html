@@ -128,6 +128,9 @@
       <label><input type="checkbox" id="deskew" checked> 拉正</label>
       <label><input type="checkbox" id="flatten" checked> 去阴影</label>
       <label><input type="checkbox" id="denoise" checked> 降噪</label>
+      <label><input type="checkbox" id="definger"> 去手指</label>
+      <label><input type="checkbox" id="demoire"> 去摩尔纹</label>
+      <label><input type="checkbox" id="debleed"> 去透字</label>
     </div>
     <button class="done" id="done" disabled>完成后扫描</button>
     <div class="status" id="status"></div>
@@ -323,7 +326,9 @@ done.onclick = async () => {
       ? {op:"idcard",mode:$("#mode").value,dpi:+$("#dpi").value,fmt:"pdf",name:"idcard"}
       : {op:"scan",mode:$("#mode").value,dpi:+$("#dpi").value,fmt:"pdf",
          crop:$("#crop").checked,deskew:$("#deskew").checked,
-         flatten:$("#flatten").checked,denoise:$("#denoise").checked,name:"capture"};
+         flatten:$("#flatten").checked,denoise:$("#denoise").checked,
+         definger:$("#definger").checked,demoire:$("#demoire").checked,
+         debleed:$("#debleed").checked,name:"capture"};
     const jr=await fetch("/api/v1/jobs",{method:"POST",
       headers:{"Content-Type":"application/json","X-Device-Id":device},
       body:JSON.stringify({task:"scan",files:ups.map(u=>({file_id:u.file_id})),options:opts})});

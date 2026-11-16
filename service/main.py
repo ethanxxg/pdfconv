@@ -257,6 +257,15 @@ def _safe_stem(name):
     return base[:80]
 
 
+def _flag(o, key, default=True):
+    """Read a boolean option without ever trusting a browser-supplied string."""
+    v = o.get(key, default)
+    if v is None:
+        return default
+    return v if isinstance(v, bool) else str(v).strip().lower() not in (
+        "false", "0", "no", "off")
+
+
 # -- edit option validation ------------------------------------------------
 # Everything below is re-validated in service/edit.py, but doing it here too is
 # what lets a malformed request fail with 400 *before* the daily allowance is
@@ -960,9 +969,13 @@ async def create_job(request: Request):
                 "code": "bad_fmt", "message": "证件扫描只输出 PDF"})
         opts["options"] = {
             "op": sop, "mode": mode, "dpi": dpi, "fmt": fmt,
-            "crop": o.get("crop", True), "deskew": o.get("deskew", True),
-            "flatten": o.get("flatten", True), "denoise": o.get("denoise", True),
-            "sharpen": o.get("sharpen", True),
+            "crop": _flag(o, "crop"), "deskew": _flag(o, "deskew"),
+            "flatten": _flag(o, "flatten"), "denoise": _flag(o, "denoise"),
+            "sharpen": _flag(o, "sharpen"),
+            # Opt-in capture fixes; absent means off in the engine too.
+            "definger": _flag(o, "definger", False),
+            "demoire": _flag(o, "demoire", False),
+            "debleed": _flag(o, "debleed", False),
         }
         opts["fmt"] = fmt
         opts["name"] = _safe_stem(o.get("name"))

@@ -69,7 +69,8 @@ with urllib.request.urlopen(BASE + "/capture") as r:
     html = r.read().decode("utf-8")
 assert r.status == 200 and "拍照扫描" in html, r.status
 for token in ("getUserMedia", "capture/frame", "manifest.webmanifest",
-              "idcard", "book", "多页连拍", "继续编辑", "shutter"):
+              "idcard", "book", "多页连拍", "继续编辑", "shutter",
+              "去手指", "去摩尔纹", "去透字"):
     assert token in html, token
 print("   capture shell ok (%d bytes)" % len(html))
 

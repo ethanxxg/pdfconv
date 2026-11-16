@@ -65,7 +65,9 @@ SPEC = {
         "mode": _enum(["color", "gray", "bw"], "color"),
         "dpi": _enum(["150", "200", "300"], "200"),
         "crop": _bool(True), "deskew": _bool(True), "flatten": _bool(True),
-        "denoise": _bool(True), "sharpen": _bool(True)}},
+        "denoise": _bool(True), "sharpen": _bool(True),
+        "definger": _bool(False), "demoire": _bool(False),
+        "debleed": _bool(False)}},
     "idcard": {"task": "scan", "op": "idcard", "max_files": 2, "props": {
         "mode": _enum(["color", "gray", "bw"], "color"),
         "dpi": _enum(["150", "200", "300"], "200")}},

@@ -48,7 +48,11 @@ for c in caps:
     assert "properties" in c["input_schema"], c["id"]
     assert c["task"] and c["min_files"] >= 1, c["id"]
 scan = [c for c in caps if c["id"] == "scan"][0]
-assert scan["input_schema"]["properties"]["mode"]["enum"] == ["color", "gray", "bw"], scan
+props = scan["input_schema"]["properties"]
+assert props["mode"]["enum"] == ["color", "gray", "bw"], scan
+for key in ("definger", "demoire", "debleed"):
+    assert props[key]["type"] == "boolean" and props[key]["default"] is False, \
+        (key, props.get(key))
 print("   %d capabilities" % len(caps))
 
 print("2. pdfkit list (human + json)")

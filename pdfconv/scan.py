@@ -7,8 +7,11 @@ worse than leaving that part of the photo alone.
 
 Stages run in this order:
 
-    crop (perspective) -> deskew -> flatten illumination -> denoise
-                       -> colour mode -> sharpen
+    definger -> crop (perspective) -> deskew -> flatten illumination
+             -> demoire -> debleed -> denoise -> colour mode -> sharpen
+
+The first three AI capture fixes are opt-in: a wrong "finger" or moire removal
+is far more visible than the artefact itself, so callers must ask for them.
 
 OpenCV is imported lazily so that a machine without it can still import the
 rest of ``pdfconv``; ``service.scan`` turns the RuntimeError below into a
@@ -160,6 +163,124 @@ def _flatten(img):
     return np.clip(out, 0, 255).astype("uint8")
 
 
+# -- capture-time artefacts ------------------------------------------------
+def _definger(img):
+    """Inpaint a finger/skin-coloured occlusion intruding from an image edge.
+
+    Skin detection in YCrCb is only a *candidate* mask; the stage is defensive
+    in three ways: candidates must touch the outer frame, form a blob of
+    plausible size, and cover well under a tenth of the image.  A false
+    positive that eats real text costs far more than a missed finger.
+    """
+    h, w = img.shape[:2]
+    ycc = cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+    cr, cb = ycc[:, :, 1], ycc[:, :, 2]
+    cand = (((cr > 133) & (cr < 180) & (cb > 77) & (cb < 128))
+            .astype("uint8") * 255)
+    band = max(8, int(min(h, w) * 0.18))
+    frame = np.zeros((h, w), dtype="uint8")
+    frame[:band, :] = frame[-band:, :] = 255
+    frame[:, :band] = frame[:, -band:] = 255
+    cand = cv2.bitwise_and(cand, frame)
+    k = max(9, min(h, w) // 40) | 1
+    cand = cv2.morphologyEx(cand, cv2.MORPH_CLOSE,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)))
+    cand = cv2.morphologyEx(cand, cv2.MORPH_OPEN,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(cand)
+    mask = np.zeros((h, w), dtype="uint8")
+    total = h * w
+    for i in range(1, n):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if 0.004 * total < area < 0.12 * total:
+            mask[labels == i] = 255
+    nfill = int(cv2.countNonZero(mask))
+    if nfill < 0.003 * total:
+        return img
+    mask = cv2.dilate(mask,
+                      cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+    return cv2.inpaint(img, mask, 7, cv2.INPAINT_TELEA)
+
+
+def _demoire(img):
+    """Notch-out high-frequency peaks caused by photographing a screen.
+
+    A screen shot shows up as a few very sharp peaks in the Fourier spectrum.
+    Only peaks that are both far from DC and far above the local background
+    are removed; a normal document has a smooth spectrum and is left alone.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    f = cv2.dft(np.float32(gray), flags=cv2.DFT_COMPLEX_OUTPUT)
+    sh = np.fft.fftshift(f)
+    mag = cv2.magnitude(sh[:, :, 0], sh[:, :, 1])
+    logmag = np.log(mag + 1.0)
+    cy, cx = h // 2, w // 2
+    r0 = max(8, int(0.06 * min(h, w)))
+    yy, xx = np.ogrid[:h, :w]
+    r = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    search = (r > r0) & (r < 0.48 * min(h, w))
+    if int(search.sum()) < 100:
+        return img
+    local = cv2.GaussianBlur(logmag.astype("float32"), (0, 0), 9)
+    thresh = float(np.percentile(logmag[search], 99.6))
+    peaks = (search & (logmag > thresh) & (logmag - local > 1.8)
+             & (logmag == cv2.dilate(logmag, np.ones((5, 5), np.uint8))))
+    ys, xs = np.nonzero(peaks)
+    if len(xs) == 0 or len(xs) > 40:
+        return img
+    # Keep the strongest handful only.
+    order = np.argsort(logmag[ys, xs])[::-1][:6]
+    notch = np.zeros((h, w), dtype=np.uint8)
+    rad = max(3, min(h, w) // 220)
+    for i in order:
+        cv2.circle(notch, (int(xs[i]), int(ys[i])), rad, 1, -1)
+    # Apply the same notch to every channel.  Doing the inverse DFT on the
+    # grayscale alone would turn a colour photo grey; a document scanner must
+    # not silently discard the source colour just because a screen was shot.
+    holes = notch.astype(bool)
+    out = np.empty_like(img)
+    for c in range(3):
+        ch = cv2.dft(np.float32(img[:, :, c]), flags=cv2.DFT_COMPLEX_OUTPUT)
+        sch = np.fft.fftshift(ch)
+        sch[holes] = 0
+        back = np.fft.ifftshift(sch)
+        # DFT_SCALE matters: without it OpenCV returns N times the image and
+        # clipping that to uint8 turns a clean page into salt-and-pepper noise.
+        rec = cv2.idft(back, flags=cv2.DFT_SCALE)
+        out[:, :, c] = cv2.magnitude(rec[:, :, 0], rec[:, :, 1])
+    return np.clip(out, 0, 255).astype("uint8")
+
+
+def _debleed(img):
+    """Suppress low-contrast type showing through from the reverse side.
+
+    Bleed-through strokes sit just a little below the paper white, while real
+    ink is much darker.  Estimate the local paper level, then pull only the
+    shallow band toward white.  Require a clear dark-ink population first, so
+    a light-gray photograph is not mistaken for bleed-through.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    k = max(31, (min(gray.shape) // 10) | 1)
+    paper = cv2.GaussianBlur(gray, (0, 0), k / 3.0)
+    depth = (paper.astype("float32") - gray.astype("float32"))
+    ink_frac = float(np.mean(depth > 55))
+    bleed = float(np.mean((depth > 8) & (depth < 40)))
+    if ink_frac < 0.005 or bleed < 2.0 * ink_frac:
+        return img
+    band = (depth > 8) & (depth < 40)
+    out = img.astype("float32")
+    # Keep 12% of the shallow stroke; the rest goes back to paper white.
+    # Work per channel so a blue pen or a coloured stamp keeps its hue -- the
+    # grayscale mask only decides *where* the bleed-through is.
+    for c in range(3):
+        ch = img[:, :, c].astype("float32")
+        local = cv2.GaussianBlur(ch, (0, 0), k / 3.0)
+        d = local - ch
+        out[:, :, c][band] = local[band] - d[band] * 0.12
+    return np.clip(out, 0, 255).astype("uint8")
+
+
 # -- finishing ------------------------------------------------------------
 def _denoise(img):
     return cv2.bilateralFilter(img, 5, 35, 35)
@@ -186,19 +307,30 @@ def enhance(img, options=None):
     """Enhance one BGR image; returns a new BGR image.
 
     ``options`` keys: crop, deskew, flatten, denoise, sharpen (bools, default
-    True) and mode ("color" | "gray" | "bw").
+    True), definger/demoire/debleed (bools, default False), and mode
+    ("color" | "gray" | "bw").
     """
     _need()
     o = options or {}
-    on = lambda key: str(o.get(key, "true")).lower() not in (
-        "false", "0", "no", "off")
+
+    def on(key, default=True):
+        v = o.get(key, default)
+        return v if isinstance(v, bool) else str(v).strip().lower() not in (
+            "false", "0", "no", "off")
     mode = str(o.get("mode") or "color").lower()
     if mode not in MODES:
         mode = "color"
     out = img
-    for key, fn in (("crop", _auto_crop), ("deskew", _deskew),
-                    ("flatten", _flatten), ("denoise", _denoise)):
-        if on(key):
+    # A finger is a capture artefact on the *source* photo, so remove it
+    # before the crop can cut it off.  Moiré and bleed-through are pixel-level
+    # artefacts best handled after the geometry and illumination are fixed.
+    if on("definger", False):
+        out = _definger(out)
+    for key, fn, default in (
+            ("crop", _auto_crop, True), ("deskew", _deskew, True),
+            ("flatten", _flatten, True), ("demoire", _demoire, False),
+            ("debleed", _debleed, False), ("denoise", _denoise, True)):
+        if on(key, default):
             out = fn(out)
     out = _mode(out, mode)
     if on("sharpen"):
